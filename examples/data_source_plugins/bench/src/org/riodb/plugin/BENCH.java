@@ -24,21 +24,32 @@ under the License.
 /*
  *  BENCH is a plugin for bench testing. It just produces numbers in a loop
  *  and adds them to a queue for RioDB stream to take from.  
+ *  
+ *  To compile, install maven and run this from the root directory where pom.xml is:
+ *  
+ *  mvn clean compile assembly:single
+ *  
+ *  The file target/bench-jar-with-dependencies.jar will be crated
+ *  
+ *  rename it to bench.jar and copy it to RioDB's /plugins directory
+ *  (or whatever directory RioDB will search for plugins)
+ *  
+ *  
  */
 
 package org.riodb.plugin;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
+//import org.apache.logging.log4j.LogManager;
+//import org.apache.logging.log4j.Logger;
 import org.jctools.queues.SpscChunkedArrayQueue;
 
 public class BENCH implements RioDBDataSource, Runnable {
 	public static final int QUEUE_INIT_CAPACITY = 244; // 10000;
 	public static final int MAX_CAPACITY = 100000;
 
-	Logger logger = LogManager.getLogger("RIO.LOG");
+//	Logger logger = LogManager.getLogger("RIO.LOG");
 
-	private int streamId;
+	//private int streamId;
 	private int status = 0; // 0 idle; 1 started; 2 warning; 3 fatal
 
 	// local copy of Stream mapping of which fields are number.
@@ -71,25 +82,21 @@ public class BENCH implements RioDBDataSource, Runnable {
 			return false;
 	}
 
-	@Override
 	public RioDBStreamEvent getNextEvent() throws RioDBPluginException {
 		return inboxQueue.poll();
 	}
 
-	@Override
 	public int getQueueSize() {
 		return inboxQueue.size();
 	}
 
-	@Override
 	public String getType() {
 		return "BENCH";
 	}
 
-	@Override
 	public void init(String listenerParams, RioDBStreamEventDef def) throws RioDBPluginException {
 
-		logger.info("initializing TCP plugin with paramters (" + listenerParams + ")");
+//		logger.info("initializing TCP plugin with paramters (" + listenerParams + ")");
 
 		numberFieldCount = def.getNumericFieldCount();
 		stringFieldCount = def.getStringFieldCount();
@@ -130,7 +137,7 @@ public class BENCH implements RioDBDataSource, Runnable {
 	}
 
 	public void run() {
-		logger.info("Starting BENCH for stream[" + streamId + "]");
+//		logger.info("Starting BENCH for stream[" + streamId + "]");
 			
 			double[] nums = new double[numberFieldCount];
 			for(int i = 0; i< nums.length; i++) {
@@ -178,16 +185,15 @@ public class BENCH implements RioDBDataSource, Runnable {
 						try {
 							Thread.sleep(1);
 						} catch (InterruptedException e) {
-							logger.error("BENCH plugin for stream[" + streamId + "] - error sleeping.");
+//							logger.error("BENCH plugin for stream[" + streamId + "] - error sleeping.");
 						}
 					}
 
 			}
 
-		logger.info("Listener for stream[" + streamId + "] stopped.");
+//		logger.info("Listener for stream[" + streamId + "] stopped.");
 	}
 
-	@Override
 	public void start() throws RioDBPluginException {
 		interrupted = false;
 		benchThread = new Thread(this);
@@ -200,7 +206,6 @@ public class BENCH implements RioDBDataSource, Runnable {
 		return new RioDBPluginStatus(status);
 	}
 
-	@Override
 	public void stop() {
 		interrupted = true;
 		benchThread.interrupt();
