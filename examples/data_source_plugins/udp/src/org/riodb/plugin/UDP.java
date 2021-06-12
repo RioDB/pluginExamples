@@ -27,8 +27,8 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.SocketException;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
+//import org.apache.logging.log4j.LogManager;
+//import org.apache.logging.log4j.Logger;
 import org.jctools.queues.SpscChunkedArrayQueue;
 
 public class UDP implements RioDBDataSource, Runnable {
@@ -38,9 +38,9 @@ public class UDP implements RioDBDataSource, Runnable {
 	private final int DEFAULT_BUFFER_SIZE = 1024;
 	private int bufferSize = DEFAULT_BUFFER_SIZE;
 	
-	Logger logger = LogManager.getLogger("RIO.LOG");
+//	Logger logger = LogManager.getLogger("RIO.LOG");
 
-	private int streamId;
+//	private int streamId;
 	private int portNumber;
 	private int status = 0; // 0 idle; 1 started; 2 warning; 3 fatal
 
@@ -106,7 +106,7 @@ public class UDP implements RioDBDataSource, Runnable {
 					} catch (NumberFormatException nfe) {
 						status = 2;
 						if (!errorAlreadyCaught) {
-							logger.warn("Stream[" + streamId + "] received INVALID NUMBER [" + s + "]");
+//							logger.warn("Stream[" + streamId + "] received INVALID NUMBER [" + s + "]");
 							errorAlreadyCaught = true;
 						}
 						return null;
@@ -116,7 +116,7 @@ public class UDP implements RioDBDataSource, Runnable {
 				} else {
 					status = 2;
 					if (!errorAlreadyCaught) {
-						logger.warn("Stream[" + streamId + "] received fewer values than expected. [" + s + "]");
+//						logger.warn("Stream[" + streamId + "] received fewer values than expected. [" + s + "]");
 						errorAlreadyCaught = true;
 					}
 				}
@@ -138,7 +138,7 @@ public class UDP implements RioDBDataSource, Runnable {
 	@Override
 	public void init(String listenerParams, RioDBStreamEventDef def) throws RioDBPluginException {
 
-		logger.info("initializing UDP plugin with paramters (" + listenerParams + ")");
+//		logger.info("initializing UDP plugin with paramters (" + listenerParams + ")");
 
 		numberFieldCount = def.getNumericFieldCount();
 		stringFieldCount = def.getStringFieldCount();
@@ -190,7 +190,7 @@ public class UDP implements RioDBDataSource, Runnable {
 	}
 
 	public void run() {
-		logger.info("Starting UDP listener for stream[" + streamId + "] port " + portNumber);
+//		logger.info("Starting UDP listener for stream[" + streamId + "] port " + portNumber);
 		try {
 			while (!interrupt) {// (!Thread.currentThread().isInterrupted()) {
 				byte[] buf = new byte[bufferSize];
@@ -200,17 +200,17 @@ public class UDP implements RioDBDataSource, Runnable {
 			}
 		} catch (IOException e) {
 			if (interrupt) {
-				logger.info("Listener connections for stream[" + streamId + "] closed.");
+//				logger.info("Listener connections for stream[" + streamId + "] closed.");
 			} else {
-				logger.error("Listener connections for stream[" + streamId + "] closed unexpectedly!");
-				logger.error(e.getMessage().replace('\n', ';').replace('\r', ';'));
+//				logger.error("Listener connections for stream[" + streamId + "] closed unexpectedly!");
+//				logger.error(e.getMessage().replace('\n', ';').replace('\r', ';'));
 			}
 		} finally {
 			if (socket != null)
 				socket.close();
 		}
 		status = 0;
-		logger.info("Listener for stream[" + streamId + "] stopped.");
+//		logger.info("Listener for stream[" + streamId + "] stopped.");
 	}
 
 	@Override
