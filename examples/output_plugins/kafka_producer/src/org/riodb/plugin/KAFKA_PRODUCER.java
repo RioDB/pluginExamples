@@ -114,7 +114,7 @@ public class KAFKA_PRODUCER implements RioDBOutput {
 	}
 
 	@Override
-	final public void send(String[] columns) {
+	final public void post(String[] columns) {
 
 		String output = "";
 		for (String c : columns) {
