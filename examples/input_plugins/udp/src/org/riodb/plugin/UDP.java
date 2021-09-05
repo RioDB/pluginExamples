@@ -27,6 +27,8 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.SocketException;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 //import org.apache.logging.log4j.LogManager;
 //import org.apache.logging.log4j.Logger;
 import org.jctools.queues.SpscChunkedArrayQueue;
@@ -37,8 +39,8 @@ public class UDP implements RioDBDataSource, Runnable {
 	/// the max size of text msg
 	private final int DEFAULT_BUFFER_SIZE = 1024;
 	private int bufferSize = DEFAULT_BUFFER_SIZE;
-	
-//	Logger logger = LogManager.getLogger("RIO.LOG");
+
+	private Logger logger = LogManager.getLogger(UDP.class.getName());
 
 //	private int streamId;
 	private int portNumber;
@@ -50,6 +52,8 @@ public class UDP implements RioDBDataSource, Runnable {
 	private int stringFieldCount;
 	private int totalFieldCount;
 	private int fieldMap[];
+
+	private String fieldDelimiter = "\t";
 
 	// An Inbox queue to receive stream raw data from TCP or UDP listeners
 	private final SpscChunkedArrayQueue<DatagramPacket> streamPacketInbox = new SpscChunkedArrayQueue<DatagramPacket>(
@@ -79,16 +83,14 @@ public class UDP implements RioDBDataSource, Runnable {
 		DatagramPacket packet = streamPacketInbox.poll();
 
 		if (packet != null) {
-			//String s = new String(packet.getData(), 0, packet.getLength());
+			// String s = new String(packet.getData(), 0, packet.getLength());
 			String s = new String(packet.getData());
-
-//			System.out.println("IN: "+s);
 
 			if (s != null && s.length() > 0) {
 				s = s.trim();
 
 				RioDBStreamEvent event = new RioDBStreamEvent(numberFieldCount, stringFieldCount);
-				String fields[] = s.split("\t");
+				String fields[] = s.split(fieldDelimiter);
 
 				if (fields.length >= totalFieldCount) {
 
@@ -102,7 +104,7 @@ public class UDP implements RioDBDataSource, Runnable {
 							}
 						}
 						return event;
-						
+
 					} catch (NumberFormatException nfe) {
 						status = 2;
 						if (!errorAlreadyCaught) {
@@ -111,7 +113,6 @@ public class UDP implements RioDBDataSource, Runnable {
 						}
 						return null;
 					}
-
 
 				} else {
 					status = 2;
@@ -138,7 +139,7 @@ public class UDP implements RioDBDataSource, Runnable {
 	@Override
 	public void init(String listenerParams, RioDBStreamEventDef def) throws RioDBPluginException {
 
-//		logger.info("initializing UDP plugin with paramters (" + listenerParams + ")");
+		logger.info("initializing UDP plugin with paramters (" + listenerParams + ")");
 
 		numberFieldCount = def.getNumericFieldCount();
 		stringFieldCount = def.getStringFieldCount();
@@ -156,34 +157,50 @@ public class UDP implements RioDBDataSource, Runnable {
 			}
 		}
 
-		
 		String params[] = listenerParams.split(" ");
-		if(params.length < 2 )
-			throw new RioDBPluginException("Port parameter is required for plugin UDP.");
+		if (params.length < 2)
+			throw new RioDBPluginException("PORT parameter is required for plugin UDP.");
 
+		// get port parameter
 		boolean portNumberSet = false;
-		for(int i = 0; i< params.length; i++) {
-			if(params[i].toLowerCase().equals("port")){
-				if (isNumber(params[i+1])) {
-					portNumber = Integer.valueOf(params[i+1]);
-					portNumberSet = true;
-				} else {
-					status = 3;
-					throw new RioDBPluginException("Port number attribute must be numeric.");
-				}
-			}
-			else if(params[i].toLowerCase().equals("buffer_size")){
-				if (isNumber(params[i+1])) {
-					bufferSize = Integer.valueOf(params[i+1]);
-				} else {
-					status = 3;
-					throw new RioDBPluginException("buffer_size parameter must be numeric.");
-				}
+		String port = getParameter(params, "port");
+		if (port != null) {
+			if (isNumber(port)) {
+				portNumber = Integer.valueOf(port);
+				portNumberSet = true;
+			} else {
+				status = 3;
+				throw new RioDBPluginException("PORT attribute must be numeric.");
 			}
 		}
-		if(!portNumberSet)
-			throw new RioDBPluginException("Port parameter is required for plugin UDP.");
-		
+		if (!portNumberSet)
+			throw new RioDBPluginException("PORT attribute is required for plugin UDP.");
+
+		// get optional buffer_size
+		String newBufferSize = getParameter(params, "buffer_size");
+		if (newBufferSize != null) {
+			if (isNumber(newBufferSize)) {
+				bufferSize = Integer.valueOf(newBufferSize);
+			} else {
+				status = 3;
+				throw new RioDBPluginException("BUFFER_SIZE attribute must be numeric.");
+			}
+
+		}
+
+		// get delimiter parameter
+		String delimiter = getParameter(params, "delimiter");
+
+		if (delimiter != null) {
+			if (delimiter.length() == 3) {
+				fieldDelimiter = String.valueOf(delimiter.charAt(1));
+
+			} else {
+				status = 3;
+				throw new RioDBPluginException(
+						"Syntax error. Delimiter should be specified in quotes:   DELIMITER ',' ");
+			}
+		}
 
 		status = 0;
 
@@ -215,7 +232,7 @@ public class UDP implements RioDBDataSource, Runnable {
 
 	@Override
 	public void start() throws RioDBPluginException {
-		
+
 		interrupt = false;
 		try {
 			socket = new DatagramSocket(portNumber);
@@ -237,10 +254,35 @@ public class UDP implements RioDBDataSource, Runnable {
 
 	@Override
 	public void stop() {
-		interrupt = true;
-		socket.close();
-		socketListenerThread.interrupt();
+
+		logger.debug("Closing UDP socket.");
+
+		try {
+			if (!socket.isClosed()) {
+				socket.close();
+			}
+			Thread.sleep(10);
+		} catch (InterruptedException e) {
+			;
+		}
+		logger.debug("Interrupting UDP thread.");
+		// socket.close();
+		// socketListenerThread.interrupt();
+		try {
+			Thread.sleep(10);
+		} catch (InterruptedException e) {
+			;
+		}
 		status = 0;
+	}
+
+	private String getParameter(String params[], String key) {
+		for (int i = 0; i < params.length; i++) {
+			if (key.equals(params[i].toLowerCase()) && i < params.length - 1) {
+				return params[i + 1];
+			}
+		}
+		return null;
 	}
 
 }

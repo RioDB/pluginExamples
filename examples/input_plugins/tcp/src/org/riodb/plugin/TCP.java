@@ -20,7 +20,6 @@ under the License.
  
 */
 
-
 /*
  *  TCP is a RioDB plugin the listens as a socket server.
  *  It receives lines of text via TCP connection
@@ -57,7 +56,7 @@ public class TCP implements RioDBDataSource, Runnable {
 	public static final int MAX_CAPACITY = 1000000;
 	public static final int DEFAULT_CONN_BACKLOG = 1000;
 
-	Logger logger = LogManager.getLogger(TCP.class.getName());
+	private Logger logger = LogManager.getLogger(TCP.class.getName());
 
 	private int streamId;
 	private int portNumber;
@@ -69,6 +68,8 @@ public class TCP implements RioDBDataSource, Runnable {
 	private int stringFieldCount;
 	private int totalFieldCount;
 	private int fieldMap[];
+
+	private String fieldDelimiter = "\t";
 
 	// An Inbox queue to receive Strings from the TCP socket
 	private SpscChunkedArrayQueue<String> inboxQueue = new SpscChunkedArrayQueue<String>(QUEUE_INIT_CAPACITY,
@@ -102,7 +103,7 @@ public class TCP implements RioDBDataSource, Runnable {
 			s = s.trim();
 
 			RioDBStreamEvent event = new RioDBStreamEvent(numberFieldCount, stringFieldCount);
-			String fields[] = s.split("\t");
+			String fields[] = s.split(fieldDelimiter);
 
 			if (fields.length >= totalFieldCount) {
 				int numCounter = 0;
@@ -147,9 +148,9 @@ public class TCP implements RioDBDataSource, Runnable {
 	}
 
 	@Override
-	public void init(String listenerParams, RioDBStreamEventDef def) throws RioDBPluginException {
+	public void init(String datasourceParams, RioDBStreamEventDef def) throws RioDBPluginException {
 
-		logger.info("initializing TCP plugin with paramters (" + listenerParams + ")");
+		logger.info("initializing TCP plugin with paramters (" + datasourceParams + ")");
 
 		numberFieldCount = def.getNumericFieldCount();
 		stringFieldCount = def.getStringFieldCount();
@@ -167,24 +168,37 @@ public class TCP implements RioDBDataSource, Runnable {
 			}
 		}
 
-		String params[] = listenerParams.split(" ");
+		String params[] = datasourceParams.split(" ");
 		if (params.length < 2)
 			throw new RioDBPluginException("Port parameter is required for plugin TCP.");
 
+		// get port parameter
 		boolean portNumberSet = false;
-		for (int i = 0; i < params.length; i++) {
-			if (params[i].toLowerCase().equals("port")) {
-				if (isNumber(params[i + 1])) {
-					portNumber = Integer.valueOf(params[i + 1]);
-					portNumberSet = true;
-				} else {
-					status = 3;
-					throw new RioDBPluginException("Port number attribute must be numeric.");
-				}
+		String port = getParameter(params, "port");
+		if (port != null) {
+			if (isNumber(port)) {
+				portNumber = Integer.valueOf(port);
+				portNumberSet = true;
+			} else {
+				status = 3;
+				throw new RioDBPluginException("Port number attribute must be numeric.");
 			}
 		}
 		if (!portNumberSet)
 			throw new RioDBPluginException("Port parameter is required for plugin TCP.");
+		
+		
+		// get delimiter parameter
+		String delimiter = getParameter(params, "delimiter");
+		if (delimiter != null ) {
+			if (delimiter.length() == 3) {
+				fieldDelimiter = String.valueOf(delimiter.charAt(1));
+			} else {
+				status = 3;
+				throw new RioDBPluginException("Syntax error. Delimiter should be specified in quotes:   DELIMITER ',' ");
+			}
+		}
+
 
 		status = 0;
 
@@ -201,7 +215,7 @@ public class TCP implements RioDBDataSource, Runnable {
 			// while (!interrupt) {
 
 			// loop for accepting incoming connections.
-			while ((clientSocket = serverSocket.accept()) != null) {
+			while ((clientSocket = serverSocket.accept()) != null && !interrupt) {
 				clientSocket.setSoTimeout(1000);
 				try {
 
@@ -231,8 +245,10 @@ public class TCP implements RioDBDataSource, Runnable {
 			}
 			// }
 			status = 0;
-			System.out.println("closing server socket.");
-			serverSocket.close();
+			if (!serverSocket.isClosed()) {
+				logger.debug("Closing TCP server socket");
+				serverSocket.close();
+			}
 
 		} catch (IOException e) {
 			if (interrupt) {
@@ -263,14 +279,28 @@ public class TCP implements RioDBDataSource, Runnable {
 
 	@Override
 	public void stop() {
+		logger.debug("Closing TCP socket.");
 		interrupt = true;
 		try {
-			clientSocket.close();
-			serverSocket.close();
+			if (!serverSocket.isClosed()) {
+				logger.debug("Closing TCP server socket");
+				serverSocket.close();
+			}
 		} catch (IOException e) {
+			logger.error("Error closing TCP sockets: " + e.getMessage().replace("\n", " ").replace("\r", " "));
 		}
+		logger.debug("Interrupting TCP thread.");
 		socketListenerThread.interrupt();
 		status = 0;
+	}
+
+	private String getParameter(String params[], String key) {
+		for (int i = 0; i < params.length; i++) {
+			if (key.equals(params[i].toLowerCase()) && i < params.length - 1) {
+				return params[i + 1];
+			}
+		}
+		return null;
 	}
 
 }
