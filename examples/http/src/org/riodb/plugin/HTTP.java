@@ -42,7 +42,7 @@ public class HTTP implements RioDBPlugin {
 	// Plugin Name
 	public static final String PLUGIN_NAME = "HTTP";
 	// Plugin Version
-	public static final String PLUGIN_VERSION = "0.0.3";
+	public static final String VERSION = "0.0.3";
 	
 	// a class with methods for using UDP as input
 	private final HttpInput input = new HttpInput();
@@ -55,6 +55,11 @@ public class HTTP implements RioDBPlugin {
 	@Override
 	public String getType() {
 		return PLUGIN_NAME;
+	}
+	
+	@Override
+	public String version() {
+		return VERSION;
 	}
 
 	@Override
@@ -94,7 +99,10 @@ public class HTTP implements RioDBPlugin {
 
 	@Override
 	public int getQueueSize() {
-		return input.getQueueSize();
+		if(isInput) {
+			return input.getQueueSize();
+		}
+		return 0;
 	}
 
 

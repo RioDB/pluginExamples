@@ -40,6 +40,7 @@ under the License.
 
 package org.riodb.plugin;
 
+import java.time.Instant;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.jctools.queues.SpscChunkedArrayQueue;
@@ -47,6 +48,7 @@ import org.jctools.queues.SpscChunkedArrayQueue;
 public class BENCH implements RioDBPlugin, Runnable {
 	
 	public static final String PLUGIN_NAME = "BENCH";
+	public static final String VERSION = "0.0.3";
 	
 	// queue limits
 	private static final int QUEUE_INIT_CAPACITY = 244; // 10000;
@@ -73,6 +75,9 @@ public class BENCH implements RioDBPlugin, Runnable {
 	
 	// field map
 	private int fieldMap[];
+	
+	// timestamp field
+	private int timestampFieldId = -1;
 	
 	// ceiling for the LOOP, when loop starts over.
 	private int ceiling = DEFAULT_CEILING;
@@ -155,6 +160,11 @@ public class BENCH implements RioDBPlugin, Runnable {
 				fieldMap[i] = stringCounter++;
 			}
 		}
+		
+		if (def.getTimestampNumericFieldId() >= 0) {
+			this.timestampFieldId = def.getTimestampNumericFieldId();
+			logger.trace(BENCH.PLUGIN_NAME + " timestampNumericFieldId is " + timestampFieldId);
+		}
 
 		String params[] = inputParams.split(" ");
 		String ceilingParam = getParameter(params, "ceiling");
@@ -214,7 +224,9 @@ public class BENCH implements RioDBPlugin, Runnable {
 			RioDBStreamMessage message = new RioDBStreamMessage(numberFieldCount, stringFieldCount);
 			// populate event fields with data.
 			for (int i = totalFieldCount - 1; i >= 0; i--) {
-				if (numericFlags[i]) {
+				if(i == timestampFieldId) {
+					message.set(fieldMap[i], Instant.now().getEpochSecond());
+				} else if (numericFlags[i]) {
 					message.set(fieldMap[i], nums[fieldMap[i]]);
 				} else {
 					message.set(fieldMap[i], strings[stringsMarker]);
@@ -282,5 +294,10 @@ public class BENCH implements RioDBPlugin, Runnable {
 		benchThread.interrupt();
 		status = 0;
 		logger.debug(PLUGIN_NAME+"BENCH is stopped.");
+	}
+
+	@Override
+	public String version() {
+		return VERSION;
 	}
 }

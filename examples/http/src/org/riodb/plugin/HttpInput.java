@@ -47,6 +47,8 @@ import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -105,6 +107,11 @@ public class HttpInput {
 	private String fieldDelimiter = ",";
 	// default fieldDelimiter as char (to reduce casting)
 	private char fieldDelimiterChar = ','; // to avoid repetitive unboxing string...
+	
+	// format variables for timestamp
+	private DateTimeFormatter timestampFormat = null;
+	private int timestampFieldId = -1;
+	private boolean timestampMillis = false;
 
 	// An Inbox queue to receive stream raw data from TCP or UDP listeners
 	private final SpscChunkedArrayQueue<String> streamPacketInbox = new SpscChunkedArrayQueue<String>(
@@ -294,6 +301,19 @@ public class HttpInput {
 			}
 		}
 
+		if (def.getTimestampNumericFieldId() >= 0) {
+			this.timestampFieldId = def.getTimestampNumericFieldId();
+			logger.trace(HTTP.PLUGIN_NAME + " timestampNumericFieldId is " + timestampFieldId);
+		}
+		
+		if(def.getTimestampFormat() != null) {
+			this.timestampFormat = DateTimeFormatter.ofPattern(def.getTimestampFormat());
+			logger.trace(HTTP.PLUGIN_NAME + " timestampFormat is " + timestampFormat);
+		}
+
+		if (def.getTimestampMillis()) {
+			timestampMillis = true;
+		}
 		logger.debug("initialized " + HTTP.PLUGIN_NAME + " plugin for INPUT, using " + portParam + ":" + urlPath
 				+ ", and contentType = " + contentTypeParam);
 	}
@@ -453,7 +473,34 @@ public class HttpInput {
 
 					if (fieldIndex != null) {
 						value = value.replace("~^CL", ":").replace("~^DQ", "\\\"").replace("~^CM", ",");
-						if (numericFlags[fieldIndex]) {
+						if(fieldIndex == timestampFieldId) {
+							
+							if (timestampFormat != null) {
+								try {
+									ZonedDateTime zdt = ZonedDateTime.parse(value, timestampFormat);
+									double epoch = zdt.toInstant().toEpochMilli() / 1000;
+									message.set(fieldMap[fieldIndex], epoch);
+								} catch (java.time.format.DateTimeParseException e) {
+									status = 2;
+									if (!errorAlreadyCaught) {
+										logger.warn(HTTP.PLUGIN_NAME + " INPUT field '"+ value +"' could not be parsed as '"+ timestampFormat.toString() +"'");
+										errorAlreadyCaught = true;
+									}
+									return null;
+								}
+
+							} else if (timestampMillis){
+								// can raise NumberFormatexception
+								double d = (long)(Double.valueOf(value)/1000);
+								message.set(fieldMap[fieldIndex], d);
+							}
+							else {
+								// can raise NumberFormatexception
+								message.set(fieldMap[fieldIndex], Double.valueOf(value));
+							}
+							
+							
+						} else if (numericFlags[fieldIndex]) {
 							try {
 								message.set(fieldMap[fieldIndex], Double.valueOf(value));
 							} catch (NumberFormatException nfe) {
@@ -525,7 +572,35 @@ public class HttpInput {
 								fields[i] = fields[i].replace("~^DL", fieldDelimiter).replace("~^DQ", "\"").trim();
 							}
 						}
-						if (numericFlags[i]) {
+						
+						if(i == timestampFieldId) {
+							
+							if (timestampFormat != null) {
+								try {
+									ZonedDateTime zdt = ZonedDateTime.parse(fields[i], timestampFormat);
+									double epoch = zdt.toInstant().toEpochMilli() / 1000;
+									event.set(fieldMap[i], epoch);
+								} catch (java.time.format.DateTimeParseException e) {
+									status = 2;
+									if (!errorAlreadyCaught) {
+										logger.warn(HTTP.PLUGIN_NAME + " INPUT field '"+ fields[i] +"' could not be parsed as '"+ timestampFormat.toString() +"'");
+										errorAlreadyCaught = true;
+									}
+									return null;
+								}
+
+							} else if (timestampMillis){
+								// can raise NumberFormatexception
+								double d = (long)(Double.valueOf(fields[i])/1000);
+								event.set(fieldMap[i], d);
+							}
+							else {
+								// can raise NumberFormatexception
+								event.set(fieldMap[i], Double.valueOf(fields[i]));
+							}
+							
+							
+						} else if (numericFlags[i]) {
 							event.set(fieldMap[i], Double.valueOf(fields[i]));
 						} else {
 							event.set(fieldMap[i], fields[i]);
