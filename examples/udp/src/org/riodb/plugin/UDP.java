@@ -48,7 +48,7 @@ public class UDP implements RioDBPlugin {
 	public static final String PLUGIN_NAME = "UDP";
 
 	// plugin version. Preferrably matching RioDBPlugin version.
-	public static final String VERSION = "0.0.3";
+	public static final String VERSION = "0.0.4";
 
 	// a class with methods for using UDP as input
 	private final UdpInput input = new UdpInput();
