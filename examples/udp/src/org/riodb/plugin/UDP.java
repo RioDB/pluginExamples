@@ -46,13 +46,16 @@ public class UDP implements RioDBPlugin {
 
 	// plugin name
 	public static final String PLUGIN_NAME = "UDP";
-	
+
+	// plugin version. Preferrably matching RioDBPlugin version.
+	public static final String VERSION = "0.0.4";
+
 	// a class with methods for using UDP as input
 	private final UdpInput input = new UdpInput();
-	
+
 	// a class with methods for using UDP as output
 	private final UdpOutput output = new UdpOutput();
-	
+
 	// a flag to determine which use "this" plugin is for
 	private boolean isInput = true;
 
@@ -62,8 +65,13 @@ public class UDP implements RioDBPlugin {
 	}
 
 	@Override
+	public String version() {
+		return VERSION;
+	}
+
+	@Override
 	public void start() throws RioDBPluginException {
-		if(isInput) {
+		if (isInput) {
 			input.start();
 		}
 		output.start();
@@ -71,7 +79,7 @@ public class UDP implements RioDBPlugin {
 
 	@Override
 	public RioDBPluginStatus status() {
-		if(isInput) {
+		if (isInput) {
 			return input.status();
 		}
 		return output.status();
@@ -79,16 +87,16 @@ public class UDP implements RioDBPlugin {
 
 	@Override
 	public void stop() throws RioDBPluginException {
-		if(isInput) {
+		if (isInput) {
 			input.stop();
 		}
 		output.stop();
 	}
-	
+
 	/*
-	 *   Methods for INPUT usage
+	 * Methods for INPUT usage
 	 */
-	
+
 	@Override
 	public RioDBStreamMessage getNextInputMessage() throws RioDBPluginException {
 		return input.getNextInputMessage();
@@ -96,22 +104,21 @@ public class UDP implements RioDBPlugin {
 
 	@Override
 	public int getQueueSize() {
-		return input.getQueueSize();
+		if(isInput) {
+			return input.getQueueSize();
+		}
+		return 0;
 	}
-
 
 	@Override
 	public void initInput(String inputParams, RioDBStreamMessageDef def) throws RioDBPluginException {
 		input.initInput(inputParams, def);
 	}
-	
-	
-	
 
 	/*
-	 *   Methods for OUTPUT usage
+	 * Methods for OUTPUT usage
 	 */
-	
+
 	@Override
 	public void initOutput(String outputParams, String[] columnHeaders) throws RioDBPluginException {
 		isInput = false;

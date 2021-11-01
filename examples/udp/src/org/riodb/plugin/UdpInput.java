@@ -45,17 +45,18 @@ import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.SocketException;
-
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.jctools.queues.SpscChunkedArrayQueue;
 
 public class UdpInput implements Runnable {
-	
+
 	// queue limits
 	public static final int QUEUE_INIT_CAPACITY = 244; // 10000;
 	public static final int MAX_CAPACITY = 1000000;
-	
+
 	// the max size of text msg
 	private final int DEFAULT_BUFFER_SIZE = 1024;
 	private int bufferSize = DEFAULT_BUFFER_SIZE;
@@ -65,7 +66,7 @@ public class UdpInput implements Runnable {
 
 	// listener port number
 	private int portNumber;
-	
+
 	// plugin status
 	private int status = 0; // 0 idle; 1 started; 2 warning; 3 fatal
 
@@ -78,6 +79,9 @@ public class UdpInput implements Runnable {
 
 	// delimiter separating fields.
 	private String fieldDelimiter = "\t";
+	private DateTimeFormatter timestampFormat = null;
+	private int timestampFieldId = -1;
+	private boolean timestampMillis = false;
 
 	// An Inbox queue to receive stream raw data from TCP or UDP listeners
 	private final SpscChunkedArrayQueue<DatagramPacket> streamPacketInbox = new SpscChunkedArrayQueue<DatagramPacket>(
@@ -85,38 +89,75 @@ public class UdpInput implements Runnable {
 
 	// instance of DatagramSocket
 	private DatagramSocket socket;
-	
+
 	// Thread for running listener
 	private Thread socketListenerThread;
 
 	// boolean variable for interrupting thread while() loop.
 	private boolean interrupt;
-	
+
 	// if an error occurs (like invalid number)
-	// we only log it once. 
+	// we only log it once.
 	private boolean errorAlreadyCaught = false;
 
-	// RioDB invokes this to poll the message queue. 
+	// RioDB invokes this to poll the message queue.
 	public RioDBStreamMessage getNextInputMessage() throws RioDBPluginException {
 
+		// poll next packet from queue
 		DatagramPacket packet = streamPacketInbox.poll();
 
+		// if there is a non-null packet....
 		if (packet != null) {
-			// String s = new String(packet.getData(), 0, packet.getLength());
+
+			// make a String object from packet
 			String s = new String(packet.getData());
 
 			if (s != null && s.length() > 0) {
-				s = s.trim();
 
+				// s = s.trim(); no trim in case delimiter is spaces.
+
+				// create new event.
 				RioDBStreamMessage event = new RioDBStreamMessage(numberFieldCount, stringFieldCount);
+
+				// split message fields by delimiter
 				String fields[] = s.split(fieldDelimiter);
 
 				if (fields.length >= totalFieldCount) {
 
 					try {
 
+						// iterate through message fields
 						for (int i = 0; i < totalFieldCount; i++) {
-							if (numericFlags[i]) {
+
+							// if this field is the timestamp field
+							if (i == timestampFieldId) {
+								// if there is a format defined, then timestamp parse timestamp String into unix
+								// epoch number.
+								if (timestampFormat != null) {
+									try {
+										ZonedDateTime zdt = ZonedDateTime.parse(fields[i], timestampFormat);
+										double epoch = zdt.toInstant().toEpochMilli() / 1000;
+										event.set(fieldMap[i], epoch);
+									} catch (java.time.format.DateTimeParseException e) {
+										status = 2;
+										if (!errorAlreadyCaught) {
+											logger.warn(UDP.PLUGIN_NAME + " INPUT field '"+ fields[i] +"' could not be parsed as '"+ timestampFormat.toString() +"'");
+											errorAlreadyCaught = true;
+										}
+										return null;
+									}
+
+								} else if (timestampMillis){
+									// can raise NumberFormatexception
+									double d = (long)(Double.valueOf(fields[i])/1000);
+									event.set(fieldMap[i], d);
+								}
+								else {
+									// can raise NumberFormatexception
+									event.set(fieldMap[i], Double.valueOf(fields[i]));
+								}
+							} else if (numericFlags[i]) {
+								// can raise NumberFormatexception
 								event.set(fieldMap[i], Double.valueOf(fields[i]));
 							} else {
 								event.set(fieldMap[i], fields[i]);
@@ -127,7 +168,7 @@ public class UdpInput implements Runnable {
 					} catch (NumberFormatException nfe) {
 						status = 2;
 						if (!errorAlreadyCaught) {
-							logger.warn("INPUT UDP received INVALID NUMBER [" + s + "]");
+							logger.warn(UDP.PLUGIN_NAME + " INPUT received INVALID NUMBER [" + s + "]");
 							errorAlreadyCaught = true;
 						}
 						return null;
@@ -136,7 +177,7 @@ public class UdpInput implements Runnable {
 				} else {
 					status = 2;
 					if (!errorAlreadyCaught) {
-						logger.warn("INPUT UDP received fewer values than expected. [" + s + "]");
+						logger.warn(UDP.PLUGIN_NAME + " INPUT received fewer values than expected. [" + s + "]");
 						errorAlreadyCaught = true;
 					}
 				}
@@ -171,6 +212,22 @@ public class UdpInput implements Runnable {
 			}
 		}
 
+		if (def.getTimestampNumericFieldId() >= 0) {
+			this.timestampFieldId = def.getTimestampNumericFieldId();
+			logger.trace(UDP.PLUGIN_NAME + " timestampNumericFieldId is " + timestampFieldId);
+		}
+		
+		if(def.getTimestampFormat() != null) {
+			this.timestampFormat = DateTimeFormatter.ofPattern(def.getTimestampFormat());
+			logger.trace(UDP.PLUGIN_NAME + " timestampFormat is " + timestampFormat);
+		}
+
+		if (def.getTimestampMillis()) {
+			timestampMillis = true;
+		}
+			
+			
+			
 		String params[] = listenerParams.split(" ");
 		if (params.length < 2)
 			throw new RioDBPluginException(UDP.PLUGIN_NAME + " input requires numeric 'port' parameter.");
@@ -211,8 +268,8 @@ public class UdpInput implements Runnable {
 
 			} else {
 				status = 3;
-				throw new RioDBPluginException(UDP.PLUGIN_NAME + 
-						" input delimiter should be specified in quotes, like ',' ");
+				throw new RioDBPluginException(
+						UDP.PLUGIN_NAME + " input delimiter should be specified in quotes, like ',' ");
 			}
 		}
 
@@ -231,9 +288,9 @@ public class UdpInput implements Runnable {
 			}
 		} catch (IOException e) {
 			if (interrupt) {
-				logger.debug(UDP.PLUGIN_NAME + " input port "+ portNumber +" closed for stream.");
+				logger.debug(UDP.PLUGIN_NAME + " input port " + portNumber + " closed for stream.");
 			} else {
-				logger.error(UDP.PLUGIN_NAME + " input port "+ portNumber +" closed unexpectedly!");
+				logger.error(UDP.PLUGIN_NAME + " input port " + portNumber + " closed unexpectedly!");
 				logger.debug(e.getMessage().replace('\n', ';').replace('\r', ';'));
 			}
 		} finally {
@@ -258,7 +315,7 @@ public class UdpInput implements Runnable {
 			throw p;
 		}
 		status = 1;
-		logger.debug("UDP Input "+ portNumber +" started.");
+		logger.debug("UDP Input " + portNumber + " started.");
 	}
 
 	public RioDBPluginStatus status() {
@@ -267,7 +324,7 @@ public class UdpInput implements Runnable {
 
 	public void stop() {
 
-		logger.debug("UDP Input closing socket "+ portNumber);
+		logger.debug("UDP Input closing socket " + portNumber);
 
 		try {
 			if (!socket.isClosed()) {

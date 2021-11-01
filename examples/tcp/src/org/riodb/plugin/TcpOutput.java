@@ -54,6 +54,7 @@ public class TcpOutput {
 	private String delimiter = ",";
 	
 	public void init(String outputParams, String[] columnHeaders) throws RioDBPluginException {
+
 		logger.debug("initializing TCP plugin for OUTPUT with paramters ( " + outputParams + ") ");
 
 		String params[] = outputParams.split(" ");

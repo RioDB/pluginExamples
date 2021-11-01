@@ -46,6 +46,9 @@ public class TCP implements RioDBPlugin {
 
 	// plugin name
 	public static final String PLUGIN_NAME = "TCP";
+	
+	// plugin version. Preferrably matching RioDBPlugin version.
+	public static final String VERSION = "0.0.4";
 
 	// a class with methods for using TCP as input
 	private final TcpInput input = new TcpInput();
@@ -61,6 +64,11 @@ public class TCP implements RioDBPlugin {
 		return PLUGIN_NAME;
 	}
 
+	@Override
+	public String version() {
+		return VERSION;
+	}
+	
 	@Override
 	public void start() throws RioDBPluginException {
 		if(isInput) {
@@ -95,7 +103,10 @@ public class TCP implements RioDBPlugin {
 
 	@Override
 	public int getQueueSize() {
-		return input.getQueueSize();
+		if(isInput) {
+			return input.getQueueSize();
+		}
+		return 0;
 	}
 
 	@Override

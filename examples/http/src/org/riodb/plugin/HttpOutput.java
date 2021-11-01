@@ -88,7 +88,7 @@ public class HttpOutput {
 
 	// in case of text/plain, the field delimiter
 	private String fieldDelimiter = ",";
-
+	
 	// booleans to direct the HTTP METHOD
 	private boolean usePostMethod = false;
 	private boolean useGetMethod = false;
@@ -297,7 +297,7 @@ public class HttpOutput {
 		} else {
 			httpRequestBuilder.uri(URI.create(url));
 		}
-		httpRequestBuilder.header("User-agent", "RioDB-" + HTTP.PLUGIN_NAME + "-Output/" + HTTP.PLUGIN_VERSION);
+		httpRequestBuilder.header("User-agent", "RioDB-" + HTTP.PLUGIN_NAME + "-Output/" + HTTP.VERSION);
 		httpRequestBuilder.timeout(Duration.ofSeconds(timeout));
 
 		String payload = null;

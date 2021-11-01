@@ -44,6 +44,8 @@ import java.io.OutputStream;
 import java.io.PrintWriter;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -67,6 +69,9 @@ public class TcpInput implements Runnable{
 	private int fieldMap[];
 
 	private String fieldDelimiter = "\t";
+	private DateTimeFormatter timestampFormat = null;
+	private int timestampFieldId = -1;
+	private boolean timestampMillis = false;
 
 	// An Inbox queue to receive Strings from the TCP socket
 	private SpscChunkedArrayQueue<String> inboxQueue = new SpscChunkedArrayQueue<String>(QUEUE_INIT_CAPACITY,
@@ -93,42 +98,79 @@ public class TcpInput implements Runnable{
 
 	public RioDBStreamMessage getNextInputMessage() throws RioDBPluginException {
 
-		String s = inboxQueue.poll();
+		String message = inboxQueue.poll();
 
-		if (s != null && s.length() > 0) {
-			s = s.trim();
-
+		if (message != null && message.length() > 0) {
+			
+			
+			// create new event.
 			RioDBStreamMessage event = new RioDBStreamMessage(numberFieldCount, stringFieldCount);
-			String fields[] = s.split(fieldDelimiter);
+
+			// split message fields by delimiter
+			String fields[] = message.split(fieldDelimiter);
 
 			if (fields.length >= totalFieldCount) {
-				int numCounter = 0;
-				int strCounter = 0;
 
-				for (int i = 0; i < fields.length; i++) {
-					if (numericFlags[i]) {
-						try {
-							event.set(numCounter++, Double.valueOf(fields[i]));
-						} catch (NumberFormatException nfe) {
-							status = 2;
-							if (!errorAlreadyCaught) {
-								logger.warn(TCP.PLUGIN_NAME + " input received INVALID NUMBER [" + s + "]");
-								errorAlreadyCaught = true;
-								return null;
+				try {
+
+					// iterate through message fields
+					for (int i = 0; i < totalFieldCount; i++) {
+
+						// if this field is the timestamp field
+						if (i == timestampFieldId) {
+							// if there is a format defined, then timestamp parse timestamp String into unix
+							// epoch number.
+							if (timestampFormat != null) {
+								try {
+									ZonedDateTime zdt = ZonedDateTime.parse(fields[i], timestampFormat);
+									double epoch = zdt.toInstant().toEpochMilli() / 1000;
+									event.set(fieldMap[i], epoch);
+								} catch (java.time.format.DateTimeParseException e) {
+									status = 2;
+									if (!errorAlreadyCaught) {
+										logger.warn(TCP.PLUGIN_NAME + " INPUT field '"+ fields[i] +"' could not be parsed as '"+ timestampFormat.toString() +"'");
+										errorAlreadyCaught = true;
+									}
+									return null;
+								}
+
+							} else if (timestampMillis){
+								// can raise NumberFormatexception
+								double d = (long)(Double.valueOf(fields[i])/1000);
+								event.set(fieldMap[i], d);
 							}
+							else {
+								// can raise NumberFormatexception
+								event.set(fieldMap[i], Double.valueOf(fields[i]));
+							}
+						} else if (numericFlags[i]) {
+							// can raise NumberFormatexception
+							event.set(fieldMap[i], Double.valueOf(fields[i]));
+						} else {
+							event.set(fieldMap[i], fields[i]);
 						}
-					} else {
-						event.set(strCounter++, fields[i]);
 					}
+					return event;
+
+				} catch (NumberFormatException nfe) {
+					status = 2;
+					if (!errorAlreadyCaught) {
+						logger.warn(TCP.PLUGIN_NAME + " INPUT received INVALID NUMBER [" + message + "]");
+						errorAlreadyCaught = true;
+					}
+					return null;
 				}
-				return event;
+
 			} else {
 				status = 2;
 				if (!errorAlreadyCaught) {
-					logger.warn(TCP.PLUGIN_NAME + " input received fewer values than expected. [" + s + "]");
+					logger.warn(TCP.PLUGIN_NAME + " INPUT received fewer values than expected. [" + message + "]");
 					errorAlreadyCaught = true;
 				}
 			}
+
+			
+			
 		}
 		return null;
 	}
@@ -155,6 +197,20 @@ public class TcpInput implements Runnable{
 			} else {
 				fieldMap[i] = stringCounter++;
 			}
+		}
+		
+		if (def.getTimestampNumericFieldId() >= 0) {
+			this.timestampFieldId = def.getTimestampNumericFieldId();
+			logger.trace(TCP.PLUGIN_NAME + " timestampNumericFieldId is " + timestampFieldId);
+		}
+		
+		if(def.getTimestampFormat() != null) {
+			this.timestampFormat = DateTimeFormatter.ofPattern(def.getTimestampFormat());
+			logger.trace(TCP.PLUGIN_NAME + " timestampFormat is " + timestampFormat);
+		}
+
+		if (def.getTimestampMillis()) {
+			timestampMillis = true;
 		}
 
 		String params[] = datasourceParams.split(" ");
