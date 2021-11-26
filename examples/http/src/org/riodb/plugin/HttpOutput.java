@@ -203,6 +203,9 @@ public class HttpOutput {
 				status = 3;
 				throw new RioDBPluginException(HTTP.PLUGIN_NAME + " output only supports GET, POST and PUT methods.");
 			}
+		} else {
+			usePostMethod = true;
+			logger.debug(HTTP.PLUGIN_NAME + " output - using method 'POST' by default.");
 		}
 
 		// set content_type
