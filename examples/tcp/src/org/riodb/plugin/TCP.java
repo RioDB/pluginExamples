@@ -60,37 +60,51 @@ public class TCP implements RioDBPlugin {
 	private boolean isInput = true;
 
 	@Override
+	public int getQueueSize() {
+		if(isInput) {
+			return input.getQueueSize();
+		}
+		return output.getQueueSize();
+	}
+	
+	@Override
 	public String getType() {
 		return PLUGIN_NAME;
 	}
 
 	@Override
-	public String version() {
-		return VERSION;
-	}
-	
-	@Override
 	public void start() throws RioDBPluginException {
 		if(isInput) {
 			input.start();
+		} else {
+			output.start();
 		}
-		output.start();
+	}
+
+	@Override
+	public RioDBPluginStatus status() {
+		if(isInput) {
+			return input.status();
+		} else {
+			return output.status();
+		}
 	}
 
 	@Override
 	public void stop() {
 		if(isInput) {
 			input.stop();
+		} else {
+			output.stop();
 		}
-		output.stop();
 	}
+	
 	@Override
-	public RioDBPluginStatus status() {
-		if(isInput) {
-			return input.status();
-		}
-		return output.status();
+	public String version() {
+		return VERSION;
 	}
+	
+
 	
 	/*
  	*   Methods for INPUT usage
@@ -101,13 +115,6 @@ public class TCP implements RioDBPlugin {
 		return input.getNextInputMessage();
 	}
 
-	@Override
-	public int getQueueSize() {
-		if(isInput) {
-			return input.getQueueSize();
-		}
-		return 0;
-	}
 
 	@Override
 	public void initInput(String inputParams, RioDBStreamMessageDef def) throws RioDBPluginException {
@@ -115,8 +122,6 @@ public class TCP implements RioDBPlugin {
 
 		// throw new RioDBPluginException("TCP plugin does not support input methods.");
 	}
-
-	
 	
 
 	/*

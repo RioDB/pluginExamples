@@ -50,6 +50,10 @@ import java.net.http.HttpResponse.BodyHandlers;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -57,6 +61,10 @@ public class HttpOutput {
 
 	// default HTTP request connection timeout in seconds
 	private static final int DEFAULT_TIMEOUT = 10;
+
+	// queue limits
+	public static final int QUEUE_INIT_CAPACITY = 244; // 10000;
+	public static final int MAX_CAPACITY = 1000000;
 
 	// logger
 	private Logger logger = LogManager.getLogger(HTTP.class.getName());
@@ -88,7 +96,7 @@ public class HttpOutput {
 
 	// in case of text/plain, the field delimiter
 	private String fieldDelimiter = ",";
-	
+
 	// booleans to direct the HTTP METHOD
 	private boolean usePostMethod = false;
 	private boolean useGetMethod = false;
@@ -96,9 +104,110 @@ public class HttpOutput {
 
 	// request connection timeout
 	private int timeout = DEFAULT_TIMEOUT;
+	// a BuilderObject to store initialized parameters, like proxy
+	java.net.http.HttpClient.Builder httpClientBuilder;
 
-	// the java HttpClient
-	private HttpClient httpClient;
+	// An Outgoing queue based on blockingQueue for efficient processing
+	private LinkedBlockingQueue<String[]> streamBlockingQueue;
+
+	// number of worker threads to send output in parallel
+	private int workers = 1;
+	private ExecutorService workerPool;
+
+	// boolean variable for interrupting thread while() loop.
+	private boolean interrupt;
+
+	/*
+	 * getParameter
+	 *
+	 * function to obtain a parameter value from an array of words For a parameter
+	 * key param[i], the value is param[i+1]
+	 */
+	private String getParameter(String params[], String key) {
+		for (int i = 0; i < params.length; i++) {
+			if (key.equals(params[i].toLowerCase()) && i < params.length - 1) {
+				return params[i + 1];
+			}
+		}
+		return null;
+	}
+
+	// Method that child thread calls to dequeue messages from the queue
+	public void dequeAndSend() {
+
+		httpClientBuilder.connectTimeout(Duration.ofSeconds(timeout));
+
+		// httpClientBuilder.authenticator(Authenticator.getDefault());
+
+		HttpClient httpClient = httpClientBuilder.build();
+
+		logger.debug(HTTP.PLUGIN_NAME + " Output Worker Thread [" + Thread.currentThread().getName() + "] - started.");
+
+		while (!interrupt) {
+
+			String columns[];
+
+			// a quick poll in case queue is not empty
+			columns = streamBlockingQueue.poll();
+
+			// if queue was empty
+			if (columns == null || columns.length == 0) {
+
+				/// then we take() and wait for something to be received.
+				try {
+					columns = streamBlockingQueue.take();
+				} catch (InterruptedException e) {
+					logger.debug(HTTP.PLUGIN_NAME + " Output WorkerThread [" + Thread.currentThread().getName()
+							+ "] -interrupted.");
+					break;
+				}
+			}
+
+			if (columns != null && columns.length > 0) {
+				HttpRequest request = makeHTTPrequest(columns);
+
+				HttpResponse<String> response;
+
+				try {
+					response = httpClient.send(request, BodyHandlers.ofString());
+					int statusCode = response.statusCode();
+					if (statusCode != 200) {
+						if (!errorAlreadyCaught) {
+							errorAlreadyCaught = true;
+							status = 2;
+							logger.warn(HTTP.PLUGIN_NAME + " Output - received HTTP response code " + statusCode);
+						}
+					}
+				} catch (IOException e) {
+					if (!errorAlreadyCaught) {
+						errorAlreadyCaught = true;
+						status = 2;
+						logger.warn(HTTP.PLUGIN_NAME + " Output IOException: " + e.getMessage().replace("\n", " "));
+					}
+				} catch (InterruptedException e) {
+					if (!errorAlreadyCaught) {
+						errorAlreadyCaught = true;
+						status = 2;
+						logger.warn(HTTP.PLUGIN_NAME + " Output InterruptedException, possibly request timed out: "
+								+ e.getMessage().replace("\n", " "));
+					}
+				}
+			}
+
+		} // end while loop
+
+		logger.debug(HTTP.PLUGIN_NAME + " Output Worker Thread [" + Thread.currentThread().getName() + "] -stopped.");
+
+		status = 0;
+
+	}
+
+	// get queue size
+	public int getQueueSize() {
+
+		return streamBlockingQueue.size();
+
+	}
 
 	/*
 	 * 
@@ -184,7 +293,7 @@ public class HttpOutput {
 						+ DEFAULT_TIMEOUT);
 			}
 		}
-		
+
 		// set method
 		String methodParam = getParameter(params, "method");
 		if (methodParam != null && methodParam.length() > 0) {
@@ -237,7 +346,35 @@ public class HttpOutput {
 			contentTypeParam = "text/plain";
 		}
 
-		java.net.http.HttpClient.Builder httpClientBuilder = HttpClient.newBuilder()
+		int maxCapacity = MAX_CAPACITY;
+		// get optional queue capacity
+		String newMaxCapacity = getParameter(params, "queue_capacity");
+		if (newMaxCapacity != null) {
+			if (isNumber(newMaxCapacity) && Integer.valueOf(newMaxCapacity) > 0) {
+				maxCapacity = Integer.valueOf(newMaxCapacity);
+			} else {
+				status = 3;
+				throw new RioDBPluginException(
+						HTTP.PLUGIN_NAME + " output requires positive intenger for 'max_capacity' parameter.");
+			}
+
+		}
+
+		// if user opted for extreme mode...
+		String newWorkers = getParameter(params, "workers");
+		if (newWorkers != null) {
+			if (isNumber(newWorkers) && Integer.valueOf(newWorkers) > 0) {
+				workers = Integer.valueOf(newWorkers);
+			} else {
+				status = 3;
+				throw new RioDBPluginException(
+						HTTP.PLUGIN_NAME + " output requires positive intenger for 'workers' parameter.");
+			}
+		}
+
+		streamBlockingQueue = new LinkedBlockingQueue<String[]>(maxCapacity);
+
+		httpClientBuilder = HttpClient.newBuilder()
 				// .version(Version.HTTP_1_1)
 				.followRedirects(Redirect.NORMAL);
 
@@ -245,54 +382,142 @@ public class HttpOutput {
 			httpClientBuilder.proxy(proxySelector);
 		}
 
-		httpClientBuilder.connectTimeout(Duration.ofSeconds(timeout));
-
-		// httpClientBuilder.authenticator(Authenticator.getDefault());
-
-		httpClient = httpClientBuilder.build();
-
 		logger.debug("Initialized " + HTTP.PLUGIN_NAME + " plugin for INPUT.");
 	}
 
 	/*
-	 * start()
-	 * 
-	 * There's no Runnable process to manage. So it's just a flag update.
-	 * 
+	 * function to test if a string is an Integer. It's repeated in HttpInput
+	 * because creating a separate classes creates trouble with some classloaders at
+	 * runtime. *
 	 */
-	public void start() throws RioDBPluginException {
-		status = 1;
+	private boolean isNumber(String s) {
+		if (s == null)
+			return false;
+		try {
+			Integer.parseInt(s);
+			return true;
+		} catch (NumberFormatException nfe) {
+			return false;
+		}
 	}
 
 	/*
-	 * get plugin status
-	 * 
+	 * If using a destination URL with substitution variables like
+	 * http://domain.com/${fieldName1}/
 	 */
-	public RioDBPluginStatus status() {
-		return new RioDBPluginStatus(status);
+	private String makeURL(String columns[]) {
+		String tempUrl = url;
+		for (int i = 0; i < columnHeaders.length; i++) {
+			if (tempUrl.contains("${" + columnHeaders[i] + "}")) {
+				tempUrl = tempUrl.replace(("${" + columnHeaders[i] + "}"), columns[i]);
+			}
+		}
+		return tempUrl;
 	}
 
 	/*
-	 * stop()
-	 * 
-	 * There's no Runnable process to manage. So it's just a flag update.
+	 * Function to convert the Query Columns into a application/json payload
 	 * 
 	 */
-	public void stop() throws RioDBPluginException {
-		status = 0;
+	private String payloadAsJson(String columns[]) {
+		StringBuilder payload = new StringBuilder("{");
+
+		if (documentParent != null) {
+			payload.append("\n \"").append(documentParent).append("\": {");
+		}
+
+		for (int i = 0; i < columns.length; i++) {
+			String value = columns[i];
+			if (value.contains("\"")) {
+				value.replace("\"", "\\\"");
+			}
+			if (value.contains("\n")) {
+				value.replace("\n", "\\n");
+			}
+			payload.append("\n  \"").append(columnHeaders[i]).append("\": \"").append(value).append("\"");
+			if (i < columns.length - 1) {
+				payload.append(",");
+			}
+		}
+
+		if (documentParent != null) {
+			payload.append("\n }");
+		}
+
+		payload.append("\n}");
+		return payload.toString();
 	}
 
 	/*
-	 * sendOutput
-	 * 
-	 * RioDB Query will invoke this method to post data. RioDB query already runs
-	 * this as a separate Thread, So there's no ready to spin off another Thread
-	 * here.
+	 * Function to convert the Query Columns into a text/plain payload
 	 * 
 	 */
-	public void sendOutput(String[] columns) {
+	private String payloadAsText(String columns[]) {
+		StringBuilder payload = new StringBuilder();
+		for (int i = 0; i < columns.length; i++) {
+			if (i > 0) {
+				payload.append(fieldDelimiter);
+			}
+			if (columns[i].contains(fieldDelimiter)) {
+				payload.append("\"").append(columns[i]).append("\"");
+			} else {
+				payload.append(columns[i]);
+			}
+		}
+		return payload.toString();
+	}
 
-		
+	/*
+	 * Function to convert the Query Columns into a application/xml payload
+	 * 
+	 */
+	private String payloadAsXml(String columns[]) {
+
+		StringBuilder payload = new StringBuilder("<");
+		payload.append(documentParent).append(">");
+
+		for (int i = 0; i < columns.length; i++) {
+			payload.append("\n  <" + columnHeaders[i] + ">").append(columns[i]).append("<\\" + columnHeaders[i] + ">");
+		}
+
+		payload.append("<\\" + documentParent + ">");
+		return payload.toString();
+	}
+
+	/*
+	 * Function to convert the Query Columns into a payload using a template file
+	 * with variable substitution
+	 * 
+	 * if using template file (optional), this runs for every send operation
+	 * 
+	 */
+	private String payloadFromTemplateFile(String columns[]) {
+		String payload = templateFile;
+		for (int i = 0; i < columnHeaders.length; i++) {
+			if (payload.contains("${" + columnHeaders[i] + "}")) {
+				payload = payload.replace(("${" + columnHeaders[i] + "}"), columns[i]);
+			}
+		}
+		return payload;
+	}
+
+	/*
+	 * sendOutput method called by parent HTTP class to send output request via HTTP
+	 * 
+	 */
+	public void sendOutput(String columns[]) {
+
+		streamBlockingQueue.offer(columns);
+
+	}
+
+	/*
+	 * makeHTTPrequest
+	 * 
+	 * function to build an HttpRequest payload based on query columns
+	 * 
+	 */
+	private HttpRequest makeHTTPrequest(String columns[]) {
 		java.net.http.HttpRequest.Builder httpRequestBuilder = HttpRequest.newBuilder();
 
 		if (dynamicUrl) {
@@ -336,118 +561,8 @@ public class HttpOutput {
 			httpRequestBuilder.PUT(BodyPublishers.ofString(payload));
 		}
 
-		HttpRequest request = httpRequestBuilder.build();
-		HttpResponse<String> response;
+		return httpRequestBuilder.build();
 
-		try {
-			response = httpClient.send(request, BodyHandlers.ofString());
-			int statusCode = response.statusCode();
-			if (statusCode != 200) {
-				if (!errorAlreadyCaught) {
-					errorAlreadyCaught = true;
-					status = 2;
-					logger.warn(HTTP.PLUGIN_NAME + " Output - received HTTP response code " + statusCode);
-				}
-			}
-		} catch (IOException e) {
-			if (!errorAlreadyCaught) {
-				errorAlreadyCaught = true;
-				status = 2;
-				logger.warn(HTTP.PLUGIN_NAME + " Output IOException: " + e.getMessage().replace("\n", " "));
-			}
-		} catch (InterruptedException e) {
-			if (!errorAlreadyCaught) {
-				errorAlreadyCaught = true;
-				status = 2;
-				logger.warn(HTTP.PLUGIN_NAME + " Output InterruptedException, possibly request timed out: "
-						+ e.getMessage().replace("\n", " "));
-			}
-		}
-
-	}
-
-	/*
-	 * If using a destination URL with substitution variables like
-	 * http://domain.com/${fieldName1}/
-	 */
-	private String makeURL(String columns[]) {
-		String tempUrl = url;
-		for (int i = 0; i < columnHeaders.length; i++) {
-			if (tempUrl.contains("${" + columnHeaders[i] + "}")) {
-				tempUrl = tempUrl.replace(("${" + columnHeaders[i] + "}"), columns[i]);
-			}
-		}
-		return tempUrl;
-	}
-
-	/*
-	 * Function to convert the Query Columns into a text/plain payload
-	 * 
-	 */
-	private String payloadAsText(String columns[]) {
-		StringBuilder payload = new StringBuilder();
-		for (int i = 0; i < columns.length; i++) {
-			if (i > 0) {
-				payload.append(fieldDelimiter);
-			}
-			if (columns[i].contains(fieldDelimiter)) {
-				payload.append("\"").append(columns[i]).append("\"");
-			} else {
-				payload.append(columns[i]);
-			}
-		}
-		return payload.toString();
-	}
-
-	/*
-	 * Function to convert the Query Columns into a application/json payload
-	 * 
-	 */
-	private String payloadAsJson(String columns[]) {
-		StringBuilder payload = new StringBuilder("{");
-
-		if (documentParent != null) {
-			payload.append("\n \"").append(documentParent).append("\": {");
-		}
-
-		for (int i = 0; i < columns.length; i++) {
-			String value = columns[i];
-			if (value.contains("\"")) {
-				value.replace("\"", "\\\"");
-			}
-			if (value.contains("\n")) {
-				value.replace("\n", "\\n");
-			}
-			payload.append("\n  \"").append(columnHeaders[i]).append("\": \"").append(value).append("\"");
-			if (i < columns.length - 1) {
-				payload.append(",");
-			}
-		}
-
-		if (documentParent != null) {
-			payload.append("\n }");
-		}
-
-		payload.append("\n}");
-		return payload.toString();
-	}
-
-	/*
-	 * Function to convert the Query Columns into a application/xml payload
-	 * 
-	 */
-
-	private String payloadAsXml(String columns[]) {
-
-		StringBuilder payload = new StringBuilder("<");
-		payload.append(documentParent).append(">");
-
-		for (int i = 0; i < columns.length; i++) {
-			payload.append("\n  <" + columnHeaders[i] + ">").append(columns[i]).append("<\\" + columnHeaders[i] + ">");
-		}
-
-		payload.append("<\\" + documentParent + ">");
-		return payload.toString();
 	}
 
 	/*
@@ -475,50 +590,45 @@ public class HttpOutput {
 	}
 
 	/*
-	 * Function to convert the Query Columns into a payload using a template file
-	 * with variable substitution
-	 * 
-	 * if using template file (optional), this runs for every send operation
+	 * start() starts all worker threads
 	 * 
 	 */
-	private String payloadFromTemplateFile(String columns[]) {
-		String payload = templateFile;
-		for (int i = 0; i < columnHeaders.length; i++) {
-			if (payload.contains("${" + columnHeaders[i] + "}")) {
-				payload = payload.replace(("${" + columnHeaders[i] + "}"), columns[i]);
-			}
+	public void start() throws RioDBPluginException {
+
+		errorAlreadyCaught = false;
+		logger.debug("HTTP Output Worker starting...");
+		interrupt = false;
+		workerPool = Executors.newFixedThreadPool(workers);
+		Runnable task = () -> {
+			dequeAndSend();
+		};
+		for (int i = 0; i < workers; i++) {
+			workerPool.execute(task);
 		}
-		return payload;
+
+		status = 1;
 	}
 
 	/*
-	 * getParameter
-	 *
-	 * function to obtain a parameter value from an array of words For a parameter
-	 * key param[i], the value is param[i+1]
+	 * get plugin status
+	 * 
 	 */
-	private String getParameter(String params[], String key) {
-		for (int i = 0; i < params.length; i++) {
-			if (key.equals(params[i].toLowerCase()) && i < params.length - 1) {
-				return params[i + 1];
-			}
-		}
-		return null;
+	public RioDBPluginStatus status() {
+		return new RioDBPluginStatus(status);
 	}
 
 	/*
-	 * function to test if a string is an Integer. It's repeated in HttpInput
-	 * because creating a separate classes creates trouble with some classloaders at
-	 * runtime. *
+	 * stops all worker threads
+	 * 
 	 */
-	private boolean isNumber(String s) {
-		if (s == null)
-			return false;
+	public void stop() throws RioDBPluginException {
+		logger.debug("TCP Output Worker stopping...");
+		interrupt = true;
 		try {
-			Integer.parseInt(s);
-			return true;
-		} catch (NumberFormatException nfe) {
-			return false;
+			Thread.sleep(10);
+		} catch (InterruptedException e) {
 		}
+		workerPool.shutdown();
+		status = 0;
 	}
 }

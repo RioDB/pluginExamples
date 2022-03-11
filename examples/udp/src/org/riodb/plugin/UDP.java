@@ -73,8 +73,9 @@ public class UDP implements RioDBPlugin {
 	public void start() throws RioDBPluginException {
 		if (isInput) {
 			input.start();
+		} else {
+			output.start();
 		}
-		output.start();
 	}
 
 	@Override
@@ -89,9 +90,19 @@ public class UDP implements RioDBPlugin {
 	public void stop() throws RioDBPluginException {
 		if (isInput) {
 			input.stop();
+		} else {
+			output.stop();
 		}
-		output.stop();
 	}
+
+	@Override
+	public int getQueueSize() {
+		if(isInput) {
+			return input.getQueueSize();
+		}
+		return output.getQueueSize();
+	}
+
 
 	/*
 	 * Methods for INPUT usage
@@ -102,15 +113,7 @@ public class UDP implements RioDBPlugin {
 		return input.getNextInputMessage();
 	}
 
-	@Override
-	public int getQueueSize() {
-		if(isInput) {
-			return input.getQueueSize();
-		}
-		return 0;
-	}
-
-	@Override
+		@Override
 	public void initInput(String inputParams, RioDBStreamMessageDef def) throws RioDBPluginException {
 		input.initInput(inputParams, def);
 	}

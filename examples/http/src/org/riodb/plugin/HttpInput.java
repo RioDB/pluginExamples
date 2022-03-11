@@ -50,9 +50,10 @@ import java.nio.charset.StandardCharsets;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
+import java.util.concurrent.LinkedBlockingQueue;
+
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.jctools.queues.SpscChunkedArrayQueue;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
@@ -107,15 +108,14 @@ public class HttpInput {
 	private String fieldDelimiter = ",";
 	// default fieldDelimiter as char (to reduce casting)
 	private char fieldDelimiterChar = ','; // to avoid repetitive unboxing string...
-	
+
 	// format variables for timestamp
 	private DateTimeFormatter timestampFormat = null;
 	private int timestampFieldId = -1;
 	private boolean timestampMillis = false;
 
 	// An Inbox queue to receive stream raw data from TCP or UDP listeners
-	private final SpscChunkedArrayQueue<String> streamPacketInbox = new SpscChunkedArrayQueue<String>(
-			QUEUE_INIT_CAPACITY, MAX_CAPACITY);
+	private final LinkedBlockingQueue<String> streamPacketInbox = new LinkedBlockingQueue<String>(MAX_CAPACITY);
 
 	// HTTP request handler
 	class HttpInputHandler implements HttpHandler {
@@ -136,8 +136,8 @@ public class HttpInput {
 				String payload = inputStreamToString(t.getRequestBody());
 
 				if (payload != null && payload.length() > 0) {
-					
-					streamPacketInbox.add(payload);
+
+					streamPacketInbox.offer(payload);
 
 				}
 
@@ -163,19 +163,24 @@ public class HttpInput {
 
 		String payload = streamPacketInbox.poll();
 
-		if (payload != null) {
-
-			if (textPlain) {
-				return handleTextMsg(payload);// handleTextMsg(payload);
+		if (payload == null) {
+			try {
+				payload = streamPacketInbox.take();
+			} catch (InterruptedException e) {
+				return null;
 			}
-			if (applicationJson) {
-				return handleJsonMsg(payload);
-			}
-			if (applicationXml) {
-				return handleXmlMsg(payload);
-			}
-
 		}
+
+		if (textPlain) {
+			return handleTextMsg(payload);// handleTextMsg(payload);
+		}
+		if (applicationJson) {
+			return handleJsonMsg(payload);
+		}
+		if (applicationXml) {
+			return handleXmlMsg(payload);
+		}
+
 		return null;
 	}
 
@@ -208,7 +213,7 @@ public class HttpInput {
 				throw new RioDBPluginException("PORT attribute must be a positive intenger.");
 			}
 		} else {
-			logger.debug( HTTP.PLUGIN_NAME + " input, using default port 8080 since a port was not specified");
+			logger.debug(HTTP.PLUGIN_NAME + " input, using default port 8080 since a port was not specified");
 		}
 
 		// restrict listener to address if provided
@@ -305,8 +310,8 @@ public class HttpInput {
 			this.timestampFieldId = def.getTimestampNumericFieldId();
 			logger.trace(HTTP.PLUGIN_NAME + " timestampNumericFieldId is " + timestampFieldId);
 		}
-		
-		if(def.getTimestampFormat() != null) {
+
+		if (def.getTimestampFormat() != null) {
 			this.timestampFormat = DateTimeFormatter.ofPattern(def.getTimestampFormat());
 			logger.trace(HTTP.PLUGIN_NAME + " timestampFormat is " + timestampFormat);
 		}
@@ -473,8 +478,8 @@ public class HttpInput {
 
 					if (fieldIndex != null) {
 						value = value.replace("~^CL", ":").replace("~^DQ", "\\\"").replace("~^CM", ",");
-						if(fieldIndex == timestampFieldId) {
-							
+						if (fieldIndex == timestampFieldId) {
+
 							if (timestampFormat != null) {
 								try {
 									ZonedDateTime zdt = ZonedDateTime.parse(value, timestampFormat);
@@ -483,23 +488,22 @@ public class HttpInput {
 								} catch (java.time.format.DateTimeParseException e) {
 									status = 2;
 									if (!errorAlreadyCaught) {
-										logger.warn(HTTP.PLUGIN_NAME + " INPUT field '"+ value +"' could not be parsed as '"+ timestampFormat.toString() +"'");
+										logger.warn(HTTP.PLUGIN_NAME + " INPUT field '" + value
+												+ "' could not be parsed as '" + timestampFormat.toString() + "'");
 										errorAlreadyCaught = true;
 									}
 									return null;
 								}
 
-							} else if (timestampMillis){
+							} else if (timestampMillis) {
 								// can raise NumberFormatexception
-								double d = (long)(Double.valueOf(value)/1000);
+								double d = (long) (Double.valueOf(value) / 1000);
 								message.set(fieldMap[fieldIndex], d);
-							}
-							else {
+							} else {
 								// can raise NumberFormatexception
 								message.set(fieldMap[fieldIndex], Double.valueOf(value));
 							}
-							
-							
+
 						} else if (numericFlags[fieldIndex]) {
 							try {
 								message.set(fieldMap[fieldIndex], Double.valueOf(value));
@@ -572,9 +576,9 @@ public class HttpInput {
 								fields[i] = fields[i].replace("~^DL", fieldDelimiter).replace("~^DQ", "\"").trim();
 							}
 						}
-						
-						if(i == timestampFieldId) {
-							
+
+						if (i == timestampFieldId) {
+
 							if (timestampFormat != null) {
 								try {
 									ZonedDateTime zdt = ZonedDateTime.parse(fields[i], timestampFormat);
@@ -583,23 +587,22 @@ public class HttpInput {
 								} catch (java.time.format.DateTimeParseException e) {
 									status = 2;
 									if (!errorAlreadyCaught) {
-										logger.warn(HTTP.PLUGIN_NAME + " INPUT field '"+ fields[i] +"' could not be parsed as '"+ timestampFormat.toString() +"'");
+										logger.warn(HTTP.PLUGIN_NAME + " INPUT field '" + fields[i]
+												+ "' could not be parsed as '" + timestampFormat.toString() + "'");
 										errorAlreadyCaught = true;
 									}
 									return null;
 								}
 
-							} else if (timestampMillis){
+							} else if (timestampMillis) {
 								// can raise NumberFormatexception
-								double d = (long)(Double.valueOf(fields[i])/1000);
+								double d = (long) (Double.valueOf(fields[i]) / 1000);
 								event.set(fieldMap[i], d);
-							}
-							else {
+							} else {
 								// can raise NumberFormatexception
 								event.set(fieldMap[i], Double.valueOf(fields[i]));
 							}
-							
-							
+
 						} else if (numericFlags[i]) {
 							event.set(fieldMap[i], Double.valueOf(fields[i]));
 						} else {
@@ -637,13 +640,12 @@ public class HttpInput {
 	private RioDBStreamMessage handleXmlMsg(String msg) {
 		return null;
 	}
-	
-	
+
 	/*
 	 * getParameter
 	 *
-	 * function to obtain a parameter value from an array of words
-	 * For a parameter key param[i], the value is param[i+1]
+	 * function to obtain a parameter value from an array of words For a parameter
+	 * key param[i], the value is param[i+1]
 	 */
 	private String getParameter(String params[], String key) {
 		for (int i = 0; i < params.length; i++) {
@@ -653,13 +655,11 @@ public class HttpInput {
 		}
 		return null;
 	}
-	
-	
+
 	/*
-	 * function to test if a string is an Integer. 
-	 * It's repeated in HttpOutput because 
-	 * creating a separate classes creates trouble
-	 * with some classloaders at runtime
+	 * function to test if a string is an Integer. It's repeated in HttpOutput
+	 * because creating a separate classes creates trouble with some classloaders at
+	 * runtime
 	 */
 	private boolean isNumber(String s) {
 		if (s == null)

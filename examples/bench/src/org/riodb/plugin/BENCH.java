@@ -41,6 +41,8 @@ under the License.
 package org.riodb.plugin;
 
 import java.time.Instant;
+import java.util.Base64;
+
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.jctools.queues.SpscChunkedArrayQueue;
@@ -174,7 +176,8 @@ public class BENCH implements RioDBPlugin, Runnable {
 
 		String stringsParam = getParameter(params, "strings");
 		if (stringsParam != null) {
-			strings = stringsParam.replace("'", "").split("\\|");
+			stringsParam = stringsParam.replace("'", "");
+			strings = stringsParam.split("\\|");
 		}
 
 		String incrementParam = getParameter(params, "increment");
@@ -299,5 +302,17 @@ public class BENCH implements RioDBPlugin, Runnable {
 	@Override
 	public String version() {
 		return VERSION;
+	}
+	
+	// function to decode base64
+	private final String decodeText(String s) {
+
+		try {
+			byte[] decodedBytes = Base64.getDecoder().decode(s.replace("$", "="));
+			return new String(decodedBytes);
+		} catch (IllegalArgumentException iae) {
+			// if s is invalid Base64, return original s
+			return s;
+		}
 	}
 }

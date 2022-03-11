@@ -66,24 +66,27 @@ public class HTTP implements RioDBPlugin {
 	public void start() throws RioDBPluginException {
 		if(isInput) {
 			input.start();
+		} else {
+			output.start();
 		}
-		output.start();
 	}
 
 	@Override
 	public RioDBPluginStatus status() {
 		if(isInput) {
 			return input.status();
+		} else {
+			return output.status();
 		}
-		return output.status();
 	}
 
 	@Override
 	public void stop() throws RioDBPluginException {
 		if(isInput) {
 			input.stop();
+		} else {
+			output.stop();
 		}
-		output.stop();
 	}
 	
 	
