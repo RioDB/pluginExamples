@@ -1,4 +1,4 @@
-[![N|Solid](https://www.riodb.org/images/Logo_Name_Small.jpg)](https://www.riodb.org/index.html)
+[![N|Solid](https://www.riodb.org/images/logo_s.jpg)](https://www.riodb.org/index.html)
 
 RioDB (www.riodb.org) is a downloadable software for data stream processing.  
 You can build powerful data screening bots through simple SQL-like statements.
