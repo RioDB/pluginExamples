@@ -47,6 +47,8 @@ import java.net.DatagramSocket;
 import java.net.SocketException;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.concurrent.LinkedBlockingQueue;
+
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.jctools.queues.SpscChunkedArrayQueue;
@@ -61,7 +63,7 @@ public class UdpInput implements Runnable {
 	private final int DEFAULT_BUFFER_SIZE = 1024;
 	private int bufferSize = DEFAULT_BUFFER_SIZE;
 
-	// loger
+	// logger
 	private Logger logger = LogManager.getLogger(UDP.class.getName());
 
 	// listener port number
@@ -83,9 +85,17 @@ public class UdpInput implements Runnable {
 	private int timestampFieldId = -1;
 	private boolean timestampMillis = false;
 
-	// An Inbox queue to receive stream raw data from TCP or UDP listeners
-	private final SpscChunkedArrayQueue<DatagramPacket> streamPacketInbox = new SpscChunkedArrayQueue<DatagramPacket>(
-			QUEUE_INIT_CAPACITY, MAX_CAPACITY);
+	// running in mode EFFICIENT vs EXTREME
+	private boolean extremeMode = false;
+
+	// An Inbox queue based on arrayQueue for extreme loads
+	private SpscChunkedArrayQueue<DatagramPacket> streamArrayQueue;
+
+	// An index queue based on blockingQueue for efficient processing
+	private LinkedBlockingQueue<DatagramPacket> streamBlockingQueue;
+
+	// An Inbox queue to receive stream raw data from listener
+	// private Queue<DatagramPacket> streamPacketQueue;
 
 	// instance of DatagramSocket
 	private DatagramSocket socket;
@@ -104,17 +114,46 @@ public class UdpInput implements Runnable {
 	public RioDBStreamMessage getNextInputMessage() throws RioDBPluginException {
 
 		// poll next packet from queue
-		DatagramPacket packet = streamPacketInbox.poll();
+		DatagramPacket packet;
+		
+		// again, extremeMode works with arrayDeque,
+		// and efficient mode works with blockingQueue
+		if (extremeMode) {
+			// poll the arraydequeue. Could be empty.
+			packet = streamArrayQueue.poll();
+			while (packet == null) {
+				// wait and try again until not null
+				try {
+					Thread.sleep(1);
+				} catch (InterruptedException e) {
+					;
+				}
+				packet = streamArrayQueue.poll();
+			}
+		} else {
+			// a quick poll before take, in case it's not empty.
+			packet = streamBlockingQueue.poll();
+			// if it was empty...
+			if(packet == null) {
+				try {
+					// now we do a take and wait until something comes.
+					packet = streamBlockingQueue.take();
+				} catch (InterruptedException e) {
+					logger.debug(UDP.PLUGIN_NAME + " INPUT queue interrupted.");
+					return null;
+				}
+			}
+		}
 
 		// if there is a non-null packet....
-		if (packet != null) {
+//		if (packet != null) {
 
 			// make a String object from packet
 			String s = new String(packet.getData());
-
+			
 			if (s != null && s.length() > 0) {
 
-				// s = s.trim(); no trim in case delimiter is spaces.
+				s = s.trim(); // trim will cause problem if delimiter is spaces.
 
 				// create new event.
 				RioDBStreamMessage event = new RioDBStreamMessage(numberFieldCount, stringFieldCount);
@@ -141,18 +180,18 @@ public class UdpInput implements Runnable {
 									} catch (java.time.format.DateTimeParseException e) {
 										status = 2;
 										if (!errorAlreadyCaught) {
-											logger.warn(UDP.PLUGIN_NAME + " INPUT field '"+ fields[i] +"' could not be parsed as '"+ timestampFormat.toString() +"'");
+											logger.warn(UDP.PLUGIN_NAME + " INPUT field '" + fields[i]
+													+ "' could not be parsed as '" + timestampFormat.toString() + "'");
 											errorAlreadyCaught = true;
 										}
 										return null;
 									}
 
-								} else if (timestampMillis){
+								} else if (timestampMillis) {
 									// can raise NumberFormatexception
-									double d = (long)(Double.valueOf(fields[i])/1000);
+									double d = (long) (Double.valueOf(fields[i]) / 1000);
 									event.set(fieldMap[i], d);
-								}
-								else {
+								} else {
 									// can raise NumberFormatexception
 									event.set(fieldMap[i], Double.valueOf(fields[i]));
 								}
@@ -182,13 +221,16 @@ public class UdpInput implements Runnable {
 					}
 				}
 			}
-		}
+//		}
 		return null;
 	}
 
 	// get queue size
 	public int getQueueSize() {
-		return streamPacketInbox.size();
+		if(extremeMode) {
+			return streamBlockingQueue.size();
+		}
+		return streamArrayQueue.size(); 
 	}
 
 	// initialize plugin for use as INPUT stream.
@@ -196,13 +238,18 @@ public class UdpInput implements Runnable {
 
 		logger.debug(UDP.PLUGIN_NAME + " initializing for INPUT with paramters (" + listenerParams + ")");
 
+		// count of numeric fields in message
 		numberFieldCount = def.getNumericFieldCount();
+		// count of string fields in message
 		stringFieldCount = def.getStringFieldCount();
+		// total count of fields in message
 		totalFieldCount = numberFieldCount + stringFieldCount;
+		// boolean array of numeric fields
 		numericFlags = def.getAllNumericFlags();
 		int numericCounter = 0;
 		int stringCounter = 0;
 
+		// populate field map
 		fieldMap = new int[numericFlags.length];
 		for (int i = 0; i < numericFlags.length; i++) {
 			if (numericFlags[i]) {
@@ -212,22 +259,24 @@ public class UdpInput implements Runnable {
 			}
 		}
 
+		// record the timestamp field id
 		if (def.getTimestampNumericFieldId() >= 0) {
 			this.timestampFieldId = def.getTimestampNumericFieldId();
 			logger.trace(UDP.PLUGIN_NAME + " timestampNumericFieldId is " + timestampFieldId);
 		}
-		
-		if(def.getTimestampFormat() != null) {
+
+		// record the timestamp format
+		if (def.getTimestampFormat() != null) {
 			this.timestampFormat = DateTimeFormatter.ofPattern(def.getTimestampFormat());
 			logger.trace(UDP.PLUGIN_NAME + " timestampFormat is " + timestampFormat);
 		}
 
+		// record timestamp precision
 		if (def.getTimestampMillis()) {
 			timestampMillis = true;
 		}
-			
-			
-			
+
+		// process parameters passed in the output parenthesis
 		String params[] = listenerParams.split(" ");
 		if (params.length < 2)
 			throw new RioDBPluginException(UDP.PLUGIN_NAME + " input requires numeric 'port' parameter.");
@@ -273,10 +322,38 @@ public class UdpInput implements Runnable {
 			}
 		}
 
+		// default queue size capacity
+		int maxCapacity = MAX_CAPACITY;
+		// get optional queue capacity
+		String newMaxCapacity = getParameter(params, "queue_capacity");
+		if (newMaxCapacity != null) {
+			if (isNumber(newMaxCapacity) && Integer.valueOf(newMaxCapacity) > 0) {
+				maxCapacity = Integer.valueOf(newMaxCapacity);
+			} else {
+				status = 3;
+				throw new RioDBPluginException(
+						UDP.PLUGIN_NAME + " input requires positive intenger for 'max_capacity' parameter.");
+			}
+
+		}
+
+		// mode.. when extreme, we use arrayDeque.
+		// when mode is efficient, we use blockingQueue
+		String mode = getParameter(params, "mode");
+		if (mode != null && mode.equals("extreme")) {
+			extremeMode = true;
+			streamArrayQueue = new SpscChunkedArrayQueue<DatagramPacket>(QUEUE_INIT_CAPACITY, maxCapacity);
+		} else {
+			streamBlockingQueue = new LinkedBlockingQueue<DatagramPacket>(maxCapacity);
+		}
+
 		status = 0;
+		
+		logger.debug(UDP.PLUGIN_NAME + " input initialized.");
 
 	}
 
+	// thread RUN method. Receives data from socket and inserts it into queue
 	public void run() {
 		logger.debug(UDP.PLUGIN_NAME + " input starting on port " + portNumber);
 		try {
@@ -284,7 +361,12 @@ public class UdpInput implements Runnable {
 				byte[] buf = new byte[bufferSize];
 				DatagramPacket packet = new DatagramPacket(buf, bufferSize);
 				socket.receive(packet);
-				streamPacketInbox.offer(packet);
+				if(extremeMode) {
+					streamArrayQueue.offer(packet);
+				} else {
+					streamBlockingQueue.offer(packet);
+				}
+				
 			}
 		} catch (IOException e) {
 			if (interrupt) {

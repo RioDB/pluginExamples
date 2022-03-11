@@ -46,6 +46,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.concurrent.LinkedBlockingQueue;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -73,9 +74,14 @@ public class TcpInput implements Runnable{
 	private int timestampFieldId = -1;
 	private boolean timestampMillis = false;
 
-	// An Inbox queue to receive Strings from the TCP socket
-	private SpscChunkedArrayQueue<String> inboxQueue = new SpscChunkedArrayQueue<String>(QUEUE_INIT_CAPACITY,
-			MAX_CAPACITY);
+	// running in mode EFFICIENT vs EXTREME
+	private boolean extremeMode = false;
+	
+	// An Inbox queue based on arrayQueue for extreme loads
+	private SpscChunkedArrayQueue<String> streamArrayQueue;
+
+	// An index queue based on blockingQueue for efficient processing
+	private LinkedBlockingQueue<String> streamBlockingQueue;
 
 	private ServerSocket serverSocket;
 	private Socket clientSocket;
@@ -98,7 +104,30 @@ public class TcpInput implements Runnable{
 
 	public RioDBStreamMessage getNextInputMessage() throws RioDBPluginException {
 
-		String message = inboxQueue.poll();
+		String message;
+		
+		if (extremeMode) {
+			message = streamArrayQueue.poll();
+			while (message == null) {
+				// wait and try again until not null
+				try {
+					Thread.sleep(1);
+				} catch (InterruptedException e) {
+					;
+				}
+				message = streamArrayQueue.poll();
+			}
+		} else {
+			message = streamBlockingQueue.poll();
+			if(message == null) {
+				try {
+					message = streamBlockingQueue.take();
+				} catch (InterruptedException e) {
+					logger.debug(TCP.PLUGIN_NAME + " INPUT queue interrupted.");
+					return null;
+				}
+			}
+		}
 
 		if (message != null && message.length() > 0) {
 			
@@ -176,7 +205,10 @@ public class TcpInput implements Runnable{
 	}
 
 	public int getQueueSize() {
-		return inboxQueue.size();
+		if(extremeMode) {
+			return streamBlockingQueue.size();
+		}
+		return streamArrayQueue.size(); 
 	}
 
 	public void init(String datasourceParams, RioDBStreamMessageDef def) throws RioDBPluginException {
@@ -243,7 +275,28 @@ public class TcpInput implements Runnable{
 				throw new RioDBPluginException(TCP.PLUGIN_NAME+ " input delimiter should be declared in single quotes, like ','");
 			}
 		}
+		
+		int maxCapacity = MAX_CAPACITY;
+		// get optional queue capacity
+		String newMaxCapacity = getParameter(params, "queue_capacity");
+		if (newMaxCapacity != null) {
+			if (isNumber(newMaxCapacity) && Integer.valueOf(newMaxCapacity) > 0) {
+				maxCapacity = Integer.valueOf(newMaxCapacity);
+			} else {
+				status = 3;
+				throw new RioDBPluginException(
+						TCP.PLUGIN_NAME + " input requires positive intenger for 'max_capacity' parameter.");
+			}
 
+		}
+
+		String mode = getParameter(params, "mode");
+		if (mode != null && mode.equals("extreme")) {
+			extremeMode = true;
+			streamArrayQueue = new SpscChunkedArrayQueue<String>(QUEUE_INIT_CAPACITY, maxCapacity);
+		} else {
+			streamBlockingQueue = new LinkedBlockingQueue<String>(maxCapacity);
+		}
 
 		status = 0;
 		
@@ -276,9 +329,15 @@ public class TcpInput implements Runnable{
 					// loops for processing lines of data.
 					int counter = 0;
 					while ((received = in.readLine()) != null) {
-						if (received.equals(";"))
+						if (received.equals(";")) {
 							break;
-						inboxQueue.offer(received);
+						}
+
+						if(extremeMode) {
+							streamArrayQueue.offer(received);
+						} else {
+							streamBlockingQueue.offer(received);
+						}
 						counter++;
 					}
 					out.print("{\"received\":" + counter + "}");
