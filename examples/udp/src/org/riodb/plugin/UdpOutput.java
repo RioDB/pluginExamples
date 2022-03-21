@@ -48,10 +48,9 @@ import java.net.InetAddress;
 import java.net.SocketException;
 import java.net.UnknownHostException;
 import java.util.concurrent.LinkedBlockingQueue;
-
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.jctools.queues.SpscChunkedArrayQueue;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class UdpOutput implements Runnable {
 
@@ -60,7 +59,7 @@ public class UdpOutput implements Runnable {
 	public static final int MAX_CAPACITY = 1000000;
 
 	// logger
-	private Logger logger = LogManager.getLogger(UDP.class.getName());
+	private Logger logger = LoggerFactory.getLogger("RIODB");
 
 	private int status = 0; // 0 idle; 1 started; 2 warning; 3 fatal
 
@@ -292,7 +291,7 @@ public class UdpOutput implements Runnable {
 		try {
 			this.socket = new DatagramSocket();
 			socketWorkerThread = new Thread(this);
-			socketWorkerThread.setName(this.getClass().getName());
+			socketWorkerThread.setName("OUTPUT_UDP_THREAD");
 			socketWorkerThread.start();
 		} catch (SocketException e) {
 			status = 3;

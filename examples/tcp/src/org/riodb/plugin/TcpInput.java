@@ -47,17 +47,16 @@ import java.net.Socket;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.LinkedBlockingQueue;
-
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.jctools.queues.SpscChunkedArrayQueue;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class TcpInput implements Runnable{
 	public static final int QUEUE_INIT_CAPACITY = 244; // 10000;
 	public static final int MAX_CAPACITY = 1000000;
 	public static final int DEFAULT_CONN_BACKLOG = 1000;
 
-	private Logger logger = LogManager.getLogger(TCP.class.getName());
+	private Logger logger = LoggerFactory.getLogger("RIODB");
 
 	private int portNumber;
 	private int status = 0; // 0 idle; 1 started; 2 warning; 3 fatal

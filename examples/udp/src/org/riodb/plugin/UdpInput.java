@@ -48,10 +48,9 @@ import java.net.SocketException;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.LinkedBlockingQueue;
-
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.jctools.queues.SpscChunkedArrayQueue;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class UdpInput implements Runnable {
 
@@ -64,7 +63,7 @@ public class UdpInput implements Runnable {
 	private int bufferSize = DEFAULT_BUFFER_SIZE;
 
 	// logger
-	private Logger logger = LogManager.getLogger(UDP.class.getName());
+	private Logger logger = LoggerFactory.getLogger("RIODB");
 
 	// listener port number
 	private int portNumber;
@@ -388,7 +387,7 @@ public class UdpInput implements Runnable {
 		try {
 			socket = new DatagramSocket(portNumber);
 			socketListenerThread = new Thread(this);
-			socketListenerThread.setName(this.getClass().getName());
+			socketListenerThread.setName("INPUT_UDP_THREAD");
 			socketListenerThread.start();
 		} catch (SocketException e) {
 			status = 3;
