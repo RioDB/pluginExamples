@@ -42,10 +42,10 @@ package org.riodb.plugin;
 
 import java.time.Instant;
 import java.util.Base64;
-
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.jctools.queues.SpscChunkedArrayQueue;
+
 
 public class BENCH implements RioDBPlugin, Runnable {
 	
@@ -58,7 +58,7 @@ public class BENCH implements RioDBPlugin, Runnable {
 	private static final int DEFAULT_CEILING = 1000000000;
 
 	// logger
-	private Logger logger = LogManager.getLogger("RIO.LOG");
+	private Logger logger = LoggerFactory.getLogger("RIODB");
 
 	// private int streamId;
 	private int status = 0; // 0 idle; 1 started; 2 warning; 3 fatal

@@ -54,8 +54,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class HttpOutput {
 
@@ -67,7 +67,7 @@ public class HttpOutput {
 	public static final int MAX_CAPACITY = 1000000;
 
 	// logger
-	private Logger logger = LogManager.getLogger(HTTP.class.getName());
+	private Logger logger = LoggerFactory.getLogger("RIODB");
 
 	// if an error occurs with request, we only log it once.
 	private boolean errorAlreadyCaught = false;

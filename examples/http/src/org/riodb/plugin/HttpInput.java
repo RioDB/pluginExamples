@@ -51,9 +51,8 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.concurrent.LinkedBlockingQueue;
-
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
@@ -67,7 +66,7 @@ public class HttpInput {
 	// ignored.
 	public static final int MAX_CAPACITY = 1000000;
 	// access to logger
-	private Logger logger = LogManager.getLogger(HTTP.class.getName());
+	private Logger logger = LoggerFactory.getLogger("RIODB");
 	// if a bad message arrives (like invalid Number), we log the issue only once
 	private boolean errorAlreadyCaught = false;
 	// an instance of java HttpServer
