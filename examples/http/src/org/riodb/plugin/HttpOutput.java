@@ -53,6 +53,8 @@ import java.time.Duration;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -67,10 +69,8 @@ public class HttpOutput {
 	public static final int MAX_CAPACITY = 1000000;
 
 	// logger
-	private Logger logger = LoggerFactory.getLogger("RIODB");
-
-	// if an error occurs with request, we only log it once.
-	private boolean errorAlreadyCaught = false;
+	private Logger logger = LoggerFactory.getLogger("org.riodb.plugin." + HTTP.PLUGIN_NAME);
+	private String logPrefix = "HTTPOutput - ";
 
 	// status of this output plugin
 	private int status = 0; // 0 idle; 1 started; 2 warning; 3 fatal
@@ -109,13 +109,25 @@ public class HttpOutput {
 
 	// An Outgoing queue based on blockingQueue for efficient processing
 	private LinkedBlockingQueue<String[]> streamBlockingQueue;
+	
+	// a poison pill to interrupt blocked take()
+	private final String[] POISON = { "'", "!" };
 
 	// number of worker threads to send output in parallel
 	private int workers = 1;
 	private ExecutorService workerPool;
+	
+	// synchronous queue to pass a message between threads to stop threads.
+	private SynchronousQueue<Boolean> syncStopFlag;
 
 	// boolean variable for interrupting thread while() loop.
-	private boolean interrupt;
+	private AtomicBoolean interrupt;
+	
+	// if an error occurs (like invalid number)
+	// we only log it once.
+	private boolean errorAlreadyCaught = false;
+	
+
 
 	/*
 	 * getParameter
@@ -141,9 +153,9 @@ public class HttpOutput {
 
 		HttpClient httpClient = httpClientBuilder.build();
 
-		logger.debug(HTTP.PLUGIN_NAME + " Output Worker Thread [" + Thread.currentThread().getName() + "] - started.");
+		logger.debug(logPrefix + "Worker Thread [" + Thread.currentThread().getName() + "] - started.");
 
-		while (!interrupt) {
+		while (!interrupt.get()) {
 
 			String columns[];
 
@@ -157,13 +169,13 @@ public class HttpOutput {
 				try {
 					columns = streamBlockingQueue.take();
 				} catch (InterruptedException e) {
-					logger.debug(HTTP.PLUGIN_NAME + " Output WorkerThread [" + Thread.currentThread().getName()
+					logger.debug(logPrefix + "WorkerThread [" + Thread.currentThread().getName()
 							+ "] -interrupted.");
 					break;
 				}
 			}
 
-			if (columns != null && columns.length > 0) {
+			if (columns != null && columns.length > 0 && columns != POISON) {
 				HttpRequest request = makeHTTPrequest(columns);
 
 				HttpResponse<String> response;
@@ -175,28 +187,33 @@ public class HttpOutput {
 						if (!errorAlreadyCaught) {
 							errorAlreadyCaught = true;
 							status = 2;
-							logger.warn(HTTP.PLUGIN_NAME + " Output - received HTTP response code " + statusCode);
+							logger.warn(logPrefix + "Received HTTP response code " + statusCode);
 						}
 					}
 				} catch (IOException e) {
 					if (!errorAlreadyCaught) {
 						errorAlreadyCaught = true;
 						status = 2;
-						logger.warn(HTTP.PLUGIN_NAME + " Output IOException: " + e.getMessage().replace("\n", " "));
+						logger.warn(logPrefix + "IOException: " + e.getMessage().replace("\n", " "));
 					}
 				} catch (InterruptedException e) {
 					if (!errorAlreadyCaught) {
 						errorAlreadyCaught = true;
 						status = 2;
-						logger.warn(HTTP.PLUGIN_NAME + " Output InterruptedException, possibly request timed out: "
+						logger.warn(logPrefix + "InterruptedException, possibly request timed out: "
 								+ e.getMessage().replace("\n", " "));
 					}
-				}
+				} 
+				
+			} else if (columns == POISON) {
+				logger.debug(logPrefix + "Worker Thread [" + Thread.currentThread().getName() + "] - received poison.");
+				break;
 			}
+			
 
 		} // end while loop
 
-		logger.debug(HTTP.PLUGIN_NAME + " Output Worker Thread [" + Thread.currentThread().getName() + "] -stopped.");
+		logger.debug(logPrefix + "Worker Thread [" + Thread.currentThread().getName() + "] -stopped.");
 
 		status = 0;
 
@@ -214,7 +231,7 @@ public class HttpOutput {
 	 * initialize this input plugin
 	 */
 	public void initOutput(String outputParams, String columnHeaders[]) throws RioDBPluginException {
-		logger.debug("initializing " + HTTP.PLUGIN_NAME + " plugin for INPUT with paramters (" + outputParams + ")");
+		logger.debug(logPrefix + "Initializing with paramters (" + outputParams + ")");
 
 		this.columnHeaders = columnHeaders;
 
@@ -232,17 +249,16 @@ public class HttpOutput {
 			proxyParam = proxyParam.replace("'", "");
 			if (proxyParam.equals("none")) {
 				proxySelector = null;
-				logger.debug(HTTP.PLUGIN_NAME + " output - forcing no_proxy.");
+				logger.debug(logPrefix + "Forcing no_proxy.");
 			} else {
 				proxyAddress = proxyParam.replace("'", "");
 				String urlParts[] = proxyAddress.split(":");
 				if (urlParts.length == 2 && isNumber(urlParts[1])) {
 					proxySelector = ProxySelector.of(new InetSocketAddress(urlParts[0], Integer.valueOf(urlParts[1])));
-					logger.debug(HTTP.PLUGIN_NAME + " output - using proxy '" + proxyAddress + "' ");
+					logger.debug(logPrefix + "Using proxy '" + proxyAddress + "' ");
 				} else {
 					status = 3;
-					throw new RioDBPluginException(HTTP.PLUGIN_NAME
-							+ " Output - proxy parameter needs port, like: 'host.domain.com:8080' , or 'none' to force no proxy. ");
+					throw new RioDBPluginException(logPrefix + "Proxy parameter needs port, like: 'host.domain.com:8080' , or 'none' to force no proxy. ");
 				}
 			}
 		}
@@ -258,7 +274,7 @@ public class HttpOutput {
 			}
 			if (url.contains("${")) {
 				dynamicUrl = true;
-				logger.debug(HTTP.PLUGIN_NAME + " output - using dynamic URL.");
+				logger.debug(logPrefix + "Using dynamic URL.");
 			}
 		} else {
 			status = 3;
@@ -269,7 +285,7 @@ public class HttpOutput {
 		String parentParam = getParameter(params, "parent_key");
 		if (parentParam != null && parentParam.length() > 0) {
 			documentParent = parentParam.replace("'", "");
-			logger.debug(HTTP.PLUGIN_NAME + " output - using document parent key '" + documentParent + "' ");
+			logger.debug(logPrefix + "Using document parent key '" + documentParent + "' ");
 		}
 
 		// set document parent key (for json or xml)
@@ -277,7 +293,7 @@ public class HttpOutput {
 		if (templateFileParam != null && templateFileParam.length() > 0) {
 			templateFileParam = templateFileParam.replace("'", "");
 			setTemplateFile(templateFileParam);
-			logger.debug(HTTP.PLUGIN_NAME + " output - using template file '" + templateFileParam + "' ");
+			logger.debug(logPrefix + "Using template file '" + templateFileParam + "' ");
 		}
 
 		// set connection timeout
@@ -285,7 +301,7 @@ public class HttpOutput {
 		if (timeoutParam != null) {
 			if (isNumber(timeoutParam) && Integer.valueOf(timeoutParam) > 0) {
 				timeout = Integer.valueOf(timeoutParam);
-				logger.debug(HTTP.PLUGIN_NAME + " output - using connection timeout " + timeoutParam + " ");
+				logger.debug(logPrefix + "Using connection timeout " + timeoutParam + " ");
 			} else {
 				status = 3;
 				throw new RioDBPluginException(HTTP.PLUGIN_NAME
@@ -300,21 +316,21 @@ public class HttpOutput {
 			methodParam = methodParam.toLowerCase().replace("'", "");
 			if (methodParam.equals("get")) {
 				useGetMethod = true;
-				logger.debug(HTTP.PLUGIN_NAME + " output - using method 'GET' ");
+				logger.debug(logPrefix + "Using method 'GET' ");
 			} else if (methodParam.equals("put")) {
 				usePutMethod = true;
-				logger.debug(HTTP.PLUGIN_NAME + " output - using method 'PUT' ");
+				logger.debug(logPrefix + "Using method 'PUT' ");
 			}
 			if (methodParam.equals("post")) {
 				usePostMethod = true;
-				logger.debug(HTTP.PLUGIN_NAME + " output - using method 'POST' ");
+				logger.debug(logPrefix + "Using method 'POST' ");
 			} else {
 				status = 3;
-				throw new RioDBPluginException(HTTP.PLUGIN_NAME + " output only supports GET, POST and PUT methods.");
+				throw new RioDBPluginException(logPrefix + "Output only supports GET, POST and PUT methods.");
 			}
 		} else {
 			usePostMethod = true;
-			logger.debug(HTTP.PLUGIN_NAME + " output - using method 'POST' by default.");
+			logger.debug(logPrefix + "Using method 'POST' by default.");
 		}
 
 		// set content_type
@@ -381,8 +397,12 @@ public class HttpOutput {
 		if (proxySelector != null) {
 			httpClientBuilder.proxy(proxySelector);
 		}
+		
+		interrupt = new AtomicBoolean();
+		syncStopFlag = new SynchronousQueue<Boolean>();
+		
 
-		logger.debug("Initialized " + HTTP.PLUGIN_NAME + " plugin for INPUT.");
+		logger.debug(logPrefix + "Initialized.");
 	}
 
 	/*
@@ -423,7 +443,7 @@ public class HttpOutput {
 		StringBuilder payload = new StringBuilder("{");
 
 		if (documentParent != null) {
-			payload.append("\n \"").append(documentParent).append("\": {");
+			payload.append(" \"").append(documentParent).append("\": {");
 		}
 
 		for (int i = 0; i < columns.length; i++) {
@@ -434,17 +454,17 @@ public class HttpOutput {
 			if (value.contains("\n")) {
 				value.replace("\n", "\\n");
 			}
-			payload.append("\n  \"").append(columnHeaders[i]).append("\": \"").append(value).append("\"");
+			payload.append(" \"").append(columnHeaders[i]).append("\": \"").append(value).append("\"");
 			if (i < columns.length - 1) {
 				payload.append(",");
 			}
 		}
 
 		if (documentParent != null) {
-			payload.append("\n }");
+			payload.append(" }");
 		}
 
-		payload.append("\n}");
+		payload.append(" }");
 		return payload.toString();
 	}
 
@@ -579,10 +599,10 @@ public class HttpOutput {
 			templateFile = Files.readString(filePath);
 
 		} catch (FileNotFoundException e) {
-			logger.error(HTTP.PLUGIN_NAME + " output - template file not found: " + fileName);
+			logger.error(logPrefix + "Template file not found: " + fileName);
 			throw new RioDBPluginException(HTTP.PLUGIN_NAME + " output - template file not found: " + fileName);
 		} catch (IOException e) {
-			logger.error(HTTP.PLUGIN_NAME + " output - loading template file: " + e.getMessage().replace("\n", "\\n"));
+			logger.error(logPrefix + "Template file: " + e.getMessage().replace("\n", "\\n"));
 			throw new RioDBPluginException(
 					HTTP.PLUGIN_NAME + " output - loading template file: " + e.getMessage().replace("\n", "\\n"));
 		}
@@ -596,8 +616,12 @@ public class HttpOutput {
 	public void start() throws RioDBPluginException {
 
 		errorAlreadyCaught = false;
-		logger.debug("HTTP Output Worker starting...");
-		interrupt = false;
+		logger.debug(logPrefix + "Worker starting...");
+		
+		// clear queue in case there is POISON from last stoppage.
+		streamBlockingQueue.clear();
+		
+		interrupt.set(false);
 		workerPool = Executors.newFixedThreadPool(workers);
 		Runnable task = () -> {
 			dequeAndSend();
@@ -605,8 +629,22 @@ public class HttpOutput {
 		for (int i = 0; i < workers; i++) {
 			workerPool.execute(task);
 		}
-
 		status = 1;
+		
+		
+		
+		
+		
+		// hold thread idle until plugin is stopped
+		try {
+			syncStopFlag.take();
+		} catch (InterruptedException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		
+		
+
 	}
 
 	/*
@@ -622,13 +660,25 @@ public class HttpOutput {
 	 * 
 	 */
 	public void stop() throws RioDBPluginException {
-		logger.debug("TCP Output Worker stopping...");
-		interrupt = true;
+		logger.debug(logPrefix + "Worker stopping...");
+		interrupt.set(true);
+		
+		streamBlockingQueue.clear();
+		
+		for(int i = 0; i < workers; i++) {
+			streamBlockingQueue.offer(POISON);
+		}
+		
+		syncStopFlag.offer(true);
+		
+		
 		try {
 			Thread.sleep(10);
 		} catch (InterruptedException e) {
 		}
 		workerPool.shutdown();
+		
+		
 		status = 0;
 	}
 }

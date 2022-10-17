@@ -1,2 +1,2 @@
-call mvn clean compile assembly:single
+call mvn clean install
 copy target\udp.jar udp.jar

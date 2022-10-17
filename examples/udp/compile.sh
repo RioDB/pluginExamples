@@ -1,4 +1,4 @@
 #!/bin/sh
-mvn clean compile assembly:single
+mvn clean install
 cp target/udp.jar .
 

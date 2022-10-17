@@ -48,18 +48,20 @@ import java.net.InetAddress;
 import java.net.SocketException;
 import java.net.UnknownHostException;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.jctools.queues.SpscChunkedArrayQueue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class UdpOutput implements Runnable {
+public class UdpOutput {
 
-	// queue limits
-	public static final int QUEUE_INIT_CAPACITY = 244; // 10000;
-	public static final int MAX_CAPACITY = 1000000;
+	// default queue limits
+	public static final int DEFAULT_QUEUE_INIT_CAPACITY = 244; // 10000;
+	public static final int DEFAULT_MAX_CAPACITY = 1000000;
 
 	// logger
-	private Logger logger = LoggerFactory.getLogger("RIODB");
+	private Logger logger = LoggerFactory.getLogger("org.riodb.plugin." + UDP.PLUGIN_NAME);
+	private String logPrefix = UDP.PLUGIN_NAME + " UdpOutput - ";
 
 	private int status = 0; // 0 idle; 1 started; 2 warning; 3 fatal
 
@@ -67,16 +69,16 @@ public class UdpOutput implements Runnable {
 	private boolean extremeMode = false;
 
 	// An Outgoing queue based on arrayQueue for extreme loads
-	private SpscChunkedArrayQueue<String[]> streamArrayQueue;
+	private SpscChunkedArrayQueue<String[]> outgoingArrayQueue;
 
 	// An Outgoing queue based on blockingQueue for efficient processing
-	private LinkedBlockingQueue<String[]> streamBlockingQueue;
-
-	// Thread for running worker
-	private Thread socketWorkerThread;
+	private LinkedBlockingQueue<String[]> outgoingBlockingQueue;
 
 	// boolean variable for interrupting thread while() loop.
-	private boolean interrupt;
+	private AtomicBoolean interrupt;
+	
+	// a poison pill to interrupt blocked take()
+	private final String[] POISON = { "'", "!" };
 
 	// if an error occurs (like invalid number)
 	// we only log it once.
@@ -117,15 +119,15 @@ public class UdpOutput implements Runnable {
 	// get queue size
 	public int getQueueSize() {
 		if (extremeMode) {
-			return streamBlockingQueue.size();
+			return outgoingBlockingQueue.size();
 		}
-		return streamArrayQueue.size();
+		return outgoingArrayQueue.size();
 	}
 
 	// initialize plugin for use as OUTPUT
 	public void initOutput(String outputParams, String[] columnHeaders) throws RioDBPluginException {
 
-		logger.debug("initializing UDP plugin for OUTPUT with paramters ( " + outputParams + ") ");
+		logger.debug(logPrefix + "Initializing with paramters ( " + outputParams + ") ");
 
 		// output parameters are provided by user in SQL statement (everything between
 		// parenthesis)
@@ -136,7 +138,7 @@ public class UdpOutput implements Runnable {
 		String portParam = getParameter(params, "port");
 
 		if (addressParam == null || portParam == null) {
-			throw new RioDBPluginException("ADDRESS and PORT parameters are required to use UDP OUTPUT.");
+			throw new RioDBPluginException("ADDRESS and PORT parameters are required.");
 		}
 		addressParam = addressParam.replace("'", "");
 		portParam = portParam.replace("'", "");
@@ -152,7 +154,7 @@ public class UdpOutput implements Runnable {
 			delimiter = delimiterParam.replace("'", "");
 		}
 
-		int maxCapacity = MAX_CAPACITY;
+		int maxCapacity = DEFAULT_MAX_CAPACITY;
 		// get optional queue capacity
 		String newMaxCapacity = getParameter(params, "queue_capacity");
 		if (newMaxCapacity != null) {
@@ -160,8 +162,7 @@ public class UdpOutput implements Runnable {
 				maxCapacity = Integer.valueOf(newMaxCapacity);
 			} else {
 				status = 3;
-				throw new RioDBPluginException(
-						UDP.PLUGIN_NAME + " output requires positive intenger for 'max_capacity' parameter.");
+				throw new RioDBPluginException("Requires positive intenger for 'queue_capacity' parameter.");
 			}
 
 		}
@@ -170,106 +171,54 @@ public class UdpOutput implements Runnable {
 		String mode = getParameter(params, "mode");
 		if (mode != null && mode.equals("extreme")) {
 			extremeMode = true;
-			streamArrayQueue = new SpscChunkedArrayQueue<String[]>(QUEUE_INIT_CAPACITY, maxCapacity);
+			outgoingArrayQueue = new SpscChunkedArrayQueue<String[]>(DEFAULT_QUEUE_INIT_CAPACITY, maxCapacity);
 		} else {
-			streamBlockingQueue = new LinkedBlockingQueue<String[]>(maxCapacity);
+			outgoingBlockingQueue = new LinkedBlockingQueue<String[]>(maxCapacity);
 		}
+
+		interrupt = new AtomicBoolean(true);
 
 		try {
 			this.address = InetAddress.getByName(addressParam);
 		} catch (UnknownHostException e) {
-			throw new RioDBPluginException(
-					"UDP OUTPUT: UnknownHostException while defining socket address: addressParam.");
+			throw new RioDBPluginException("UnknownHostException while defining socket address: addressParam.");
 		}
+		
+		logger.debug(logPrefix +"Initialized.");
 
 	}
 
 	private DatagramPacket makeDatagramPacket(String[] columns) {
 
-		String outStr = "";
+		StringBuilder outStr = new StringBuilder("");
 
 		// concatenate fields split by delimiter.
 		for (int i = 0; i < columns.length; i++) {
 			if (i > 0) {
-				outStr = outStr + delimiter;
+				outStr.append(delimiter);
 			}
-			outStr = outStr + columns[i];
+			outStr.append(columns[i]);
 		}
 
 		// prepare data for sucket.
-		byte[] buf = outStr.getBytes();
+		byte[] buf = outStr.toString().getBytes();
 		return new DatagramPacket(buf, buf.length, address, portNumber);
 
-	}
-
-	// Runnable run() method
-	// Thread dequeues packets ready to be sent to destination
-	@Override
-	public void run() {
-		logger.debug(UDP.PLUGIN_NAME + " output worker started.");
-
-		// again, extremeMode works with arrayDeque,
-		// and efficient mode works with blockingQueue
-
-		while (!interrupt) {
-
-			String columns[];
-
-			// if running extreme mode.
-			if (extremeMode) {
-
-				// we poll the arraydequeue. Could be empty.
-				columns = streamArrayQueue.poll();
-				// if empty, we do a wait 1ms and try again.
-				while ((columns == null || columns.length == 0) && !interrupt) {
-					// wait and try again until not null
-					try {
-						Thread.sleep(1);
-					} catch (InterruptedException e) {
-						;
-					}
-					columns = streamArrayQueue.poll();
-				}
-
-			} else { // efficient mode.
-
-				// a quick poll in case queue is not empty
-				columns = streamBlockingQueue.poll();
-
-				// if queue was empty
-				if (columns == null || columns.length == 0) {
-
-					/// then we take() and wait for something to be received.
-					try {
-						columns = streamBlockingQueue.take();
-					} catch (InterruptedException e) {
-						logger.debug(UDP.PLUGIN_NAME + " OUTPUT queue interrupted.");
-						break;
-					}
-				}
-			}
-
-			if (columns != null && columns.length > 0) {
-				DatagramPacket packet = makeDatagramPacket(columns);
-				sendUDPpacket(packet);
-			}
-		}
-
-		logger.debug(UDP.PLUGIN_NAME + " output worker stopped.");
-
-		status = 0;
 	}
 
 	// procedure to send UDP output to destination.
 	public void sendOutput(String[] columns) {
 
 		// send to appropriate queue.
-		if (extremeMode) {
-			streamArrayQueue.offer(columns);
-		} else {
-			streamBlockingQueue.offer(columns);
+		if (!(extremeMode ? outgoingArrayQueue.offer(columns) : outgoingBlockingQueue.offer(columns))) {
+			// offer returns false when the queue is full. So if above is FALSE, then the
+			// queue is full.
+			if (!errorAlreadyCaught) {
+				logger.error(logPrefix + "Outgoing queue is full! New outgoing messages are being dropped. Limit is "
+						+ DEFAULT_MAX_CAPACITY);
+				errorAlreadyCaught = true;
+			}
 		}
-
 	}
 
 	// procedure for sending UDP packet to socket.
@@ -278,30 +227,81 @@ public class UdpOutput implements Runnable {
 			socket.send(packet);
 		} catch (IOException e) {
 			if (!errorAlreadyCaught) {
-				logger.error("UDP OUTPUT IOException.");
-				logger.debug(e.getMessage().replace("\n", " ").replace("\r", " ").replace("\"", " "));
+				logger.error(logPrefix + "IOException.");
+				logger.debug(logPrefix + e.getMessage().replace("\n", " ").replace("\r", " ").replace("\"", " "));
+				errorAlreadyCaught = true;
+				status = 2;
 			}
-			status = 1;
 		}
 	}
 
 	// procedure for starting the output plugin thread.
 	public void start() throws RioDBPluginException {
-		interrupt = false;
+
+		logger.debug(logPrefix + "Starting...");
+		errorAlreadyCaught = false;
+		interrupt.set(false);
 		try {
 			this.socket = new DatagramSocket();
-			socketWorkerThread = new Thread(this);
-			socketWorkerThread.setName("OUTPUT_UDP_THREAD");
-			socketWorkerThread.start();
 		} catch (SocketException e) {
+			interrupt.set(true);
 			status = 3;
-			RioDBPluginException p = new RioDBPluginException("Failed to start output worker. " + e.getMessage());
-			p.setStackTrace(e.getStackTrace());
-			throw p;
+			throw new RioDBPluginException(e.getMessage());
 		}
-		status = 2;
-		logger.debug("UDP Output " + portNumber + " started.");
+		status = 1;
 
+		// again, extremeMode works with arrayDeque,
+		// and efficient mode works with blockingQueue
+
+		while (!interrupt.get()) {
+
+			String columns[];
+
+			// if running extreme mode.
+			if (extremeMode) {
+
+				// we poll the arraydequeue. Could be empty.
+				columns = outgoingArrayQueue.poll();
+				// if empty, we do a wait 1ms and try again.
+				while ((columns == null || columns.length == 0) && !interrupt.get()) {
+					// wait and try again until not null
+					try {
+						Thread.sleep(1);
+					} catch (InterruptedException e) {
+						;
+					}
+					columns = outgoingArrayQueue.poll();
+				}
+
+			} else { // efficient mode - blockingQueue
+
+				// a quick poll in case queue is not empty
+				columns = outgoingBlockingQueue.poll();
+
+				// if queue was empty
+				if (columns == null || columns.length == 0) {
+
+					/// then we take() and wait for something to be received.
+					try {
+						columns = outgoingBlockingQueue.take();
+					} catch (InterruptedException e) {
+						logger.debug(logPrefix + "Blocking queue interrupted.");
+						break;
+					}
+				}
+			}
+
+			if (columns != null && columns.length > 0 && !interrupt.get() && columns != POISON) {
+				DatagramPacket packet = makeDatagramPacket(columns);
+				sendUDPpacket(packet);
+			}
+		}
+
+		logger.debug(logPrefix + "Closing socket...");
+		this.socket.close();
+		errorAlreadyCaught = false;
+		status = 0;
+		logger.debug(logPrefix + "Stopped.");
 	}
 
 	// getter for plugin status
@@ -311,26 +311,10 @@ public class UdpOutput implements Runnable {
 
 	// procedure for stopping output plugin thread.
 	public void stop() {
-		logger.debug("UDP Output closing socket " + portNumber);
-
-		interrupt = true;
-		try {
-			if (!socket.isClosed()) {
-				socket.close();
-			}
-			Thread.sleep(10);
-		} catch (InterruptedException e) {
-			;
+		logger.debug(logPrefix + "Stopping...");
+		interrupt.set(true);
+		if (!extremeMode) {
+			outgoingBlockingQueue.offer(POISON);
 		}
-		logger.debug("UDP Output interrupting Thread.");
-		// socket.close();
-		// socketListenerThread.interrupt();
-		try {
-			Thread.sleep(10);
-		} catch (InterruptedException e) {
-			;
-		}
-		status = 0;
-
 	}
 }
