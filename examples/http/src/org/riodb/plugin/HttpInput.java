@@ -51,6 +51,7 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.SynchronousQueue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import com.sun.net.httpserver.HttpExchange;
@@ -112,6 +113,8 @@ public class HttpInput {
 	private DateTimeFormatter timestampFormat = null;
 	private int timestampFieldId = -1;
 	private boolean timestampMillis = false;
+
+	SynchronousQueue<Boolean> interrupt;
 
 	// An Inbox queue to receive stream raw data from TCP or UDP listeners
 	private final LinkedBlockingQueue<String> streamPacketInbox = new LinkedBlockingQueue<String>(MAX_CAPACITY);
@@ -195,7 +198,7 @@ public class HttpInput {
 	 */
 	public void initInput(String listenerParams, RioDBStreamMessageDef def) throws RioDBPluginException {
 
-		logger.debug("initializing " + HTTP.PLUGIN_NAME + " plugin for INPUT with paramters (" + listenerParams + ")");
+		logger.debug(HTTP.PLUGIN_NAME + " INPUT - Initializing with paramters (" + listenerParams + ")");
 
 		// GET CONFIGURABLE PARAMETERS:
 
@@ -212,7 +215,7 @@ public class HttpInput {
 				throw new RioDBPluginException("PORT attribute must be a positive intenger.");
 			}
 		} else {
-			logger.debug(HTTP.PLUGIN_NAME + " input, using default port 8080 since a port was not specified");
+			logger.debug(HTTP.PLUGIN_NAME + " INPUT -  using default port 8080 since a port was not specified");
 		}
 
 		// restrict listener to address if provided
@@ -307,19 +310,21 @@ public class HttpInput {
 
 		if (def.getTimestampNumericFieldId() >= 0) {
 			this.timestampFieldId = def.getTimestampNumericFieldId();
-			logger.trace(HTTP.PLUGIN_NAME + " timestampNumericFieldId is " + timestampFieldId);
+			logger.debug(HTTP.PLUGIN_NAME + " INPUT - timestampNumericFieldId is " + timestampFieldId);
 		}
 
 		if (def.getTimestampFormat() != null) {
 			this.timestampFormat = DateTimeFormatter.ofPattern(def.getTimestampFormat());
-			logger.trace(HTTP.PLUGIN_NAME + " timestampFormat is " + timestampFormat);
+			logger.debug(HTTP.PLUGIN_NAME + " INPUT - timestampFormat is " + timestampFormat);
 		}
 
 		if (def.getTimestampMillis()) {
 			timestampMillis = true;
 		}
-		logger.debug("initialized " + HTTP.PLUGIN_NAME + " plugin for INPUT, using " + portParam + ":" + urlPath
+		logger.debug(HTTP.PLUGIN_NAME + " INPUT - Initialized using " + portParam + ":" + urlPath
 				+ ", and contentType = " + contentTypeParam);
+
+		interrupt = new SynchronousQueue<Boolean>();
 	}
 
 	/*
@@ -329,23 +334,31 @@ public class HttpInput {
 	 * 
 	 */
 	public void start() throws RioDBPluginException {
-		logger.debug(HTTP.PLUGIN_NAME + " Input " + portNumber + " starting...");
+		logger.debug(HTTP.PLUGIN_NAME + " INPUT - Starting on port " + portNumber);
 		try {
 
 			httpServer = HttpServer.create(socketAddress, backlog);
 			httpServer.createContext(urlPath, httpInputHandler);
 			httpServer.setExecutor(null); // creates a default executor
-			logger.info("Starting HTTPServer on " + portNumber + " with backlog = " + backlog);
+			logger.info(
+					HTTP.PLUGIN_NAME + " INPUT - Starting HTTPServer on " + portNumber + " with backlog = " + backlog);
 			httpServer.start();
 			status = 1;
 
 		} catch (IOException e) {
-			logger.error("Error starting HTTP interface");
-			logger.error(e.getMessage());
+			logger.error(HTTP.PLUGIN_NAME + " INPUT - Error starting HTTP interface: " + e.getMessage());
 			httpServer = null;
 			status = 3;
 		}
-		logger.debug(HTTP.PLUGIN_NAME + " Input " + portNumber + " started.");
+
+		logger.debug(HTTP.PLUGIN_NAME + " INPUT - " + portNumber + " started.");
+
+		// Park the thread here until stop() is issued.
+		try {
+			interrupt.take();
+		} catch (InterruptedException e) {
+		}
+
 	}
 
 	/*
@@ -362,14 +375,18 @@ public class HttpInput {
 	 * stops this plugin when RioDB is put offline.
 	 */
 	public void stop() {
-		logger.debug(HTTP.PLUGIN_NAME + " Input " + portNumber + " stopping...");
+		logger.debug(HTTP.PLUGIN_NAME + " INPUT - " + portNumber + " stopping...");
 		if (httpServer != null) {
 			httpServer.stop(0);
 			httpServer = null;
-			logger.info("Stopped HTTP interface");
+			logger.debug(HTTP.PLUGIN_NAME + " INPUT - Stopped HTTP interface");
+		}
+		try {
+			interrupt.put(true);
+		} catch (InterruptedException e) {
 		}
 		status = 0;
-		logger.debug(HTTP.PLUGIN_NAME + " Input " + portNumber + " stopped.");
+		logger.debug(HTTP.PLUGIN_NAME + " INPUT - " + portNumber + " terminated.");
 	}
 
 	/*
@@ -393,7 +410,7 @@ public class HttpInput {
 		} catch (IOException e) {
 			status = 2;
 			if (!errorAlreadyCaught) {
-				logger.warn("HTTP Input: IOException while converting InputStream to String");
+				logger.warn(HTTP.PLUGIN_NAME + " INPUT - IOException while converting InputStream to String");
 				errorAlreadyCaught = true;
 			}
 		}
@@ -451,7 +468,7 @@ public class HttpInput {
 					if (colonMarker <= 0) {
 						status = 2;
 						if (!errorAlreadyCaught) {
-							logger.warn("INPUT HTTP received an invalid json.");
+							logger.warn(HTTP.PLUGIN_NAME + " INPUT - Received an invalid json.");
 							errorAlreadyCaught = true;
 						}
 						return null;
@@ -487,7 +504,7 @@ public class HttpInput {
 								} catch (java.time.format.DateTimeParseException e) {
 									status = 2;
 									if (!errorAlreadyCaught) {
-										logger.warn(HTTP.PLUGIN_NAME + " INPUT field '" + value
+										logger.warn(HTTP.PLUGIN_NAME + " INPUT - Field '" + value
 												+ "' could not be parsed as '" + timestampFormat.toString() + "'");
 										errorAlreadyCaught = true;
 									}
@@ -509,7 +526,7 @@ public class HttpInput {
 							} catch (NumberFormatException nfe) {
 								status = 2;
 								if (!errorAlreadyCaught) {
-									logger.warn("INPUT HTTP received an invalid number.");
+									logger.warn(HTTP.PLUGIN_NAME + " INPUT - Received an invalid number.");
 									errorAlreadyCaught = true;
 								}
 								return null;
@@ -524,8 +541,10 @@ public class HttpInput {
 				return message;
 
 			} else {
-				System.out.println("INPUT HTTP received INVALID JSON payload.");
-
+				if (!errorAlreadyCaught) {
+					logger.warn(HTTP.PLUGIN_NAME + " INPUT - Received an invalid json payload.");
+					errorAlreadyCaught = true;
+				}
 			}
 		}
 
@@ -586,7 +605,7 @@ public class HttpInput {
 								} catch (java.time.format.DateTimeParseException e) {
 									status = 2;
 									if (!errorAlreadyCaught) {
-										logger.warn(HTTP.PLUGIN_NAME + " INPUT field '" + fields[i]
+										logger.warn(HTTP.PLUGIN_NAME + " INPUT - Field '" + fields[i]
 												+ "' could not be parsed as '" + timestampFormat.toString() + "'");
 										errorAlreadyCaught = true;
 									}
@@ -613,7 +632,7 @@ public class HttpInput {
 				} catch (NumberFormatException nfe) {
 					status = 2;
 					if (!errorAlreadyCaught) {
-						logger.warn("INPUT HTTP received an invalid number.");
+						logger.warn(HTTP.PLUGIN_NAME + " INPUT - Received an invalid number.");
 						errorAlreadyCaught = true;
 					}
 					return null;
@@ -622,7 +641,7 @@ public class HttpInput {
 			} else {
 				status = 2;
 				if (!errorAlreadyCaught) {
-					logger.warn("INPUT HTTP received fewer values than expected.");
+					logger.warn(HTTP.PLUGIN_NAME + " INPUT - Received fewer values than expected.");
 					errorAlreadyCaught = true;
 				}
 			}

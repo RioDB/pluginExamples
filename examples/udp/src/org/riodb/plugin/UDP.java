@@ -97,12 +97,11 @@ public class UDP implements RioDBPlugin {
 
 	@Override
 	public int getQueueSize() {
-		if(isInput) {
+		if (isInput) {
 			return input.getQueueSize();
 		}
 		return output.getQueueSize();
 	}
-
 
 	/*
 	 * Methods for INPUT usage
@@ -113,7 +112,7 @@ public class UDP implements RioDBPlugin {
 		return input.getNextInputMessage();
 	}
 
-		@Override
+	@Override
 	public void initInput(String inputParams, RioDBStreamMessageDef def) throws RioDBPluginException {
 		input.initInput(inputParams, def);
 	}

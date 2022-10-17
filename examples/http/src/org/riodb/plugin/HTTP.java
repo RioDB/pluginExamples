@@ -75,9 +75,8 @@ public class HTTP implements RioDBPlugin {
 	public RioDBPluginStatus status() {
 		if(isInput) {
 			return input.status();
-		} else {
-			return output.status();
-		}
+		} 
+		return output.status();
 	}
 
 	@Override

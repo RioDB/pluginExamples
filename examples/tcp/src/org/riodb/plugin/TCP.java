@@ -46,27 +46,27 @@ public class TCP implements RioDBPlugin {
 
 	// plugin name
 	public static final String PLUGIN_NAME = "TCP";
-	
+
 	// plugin version. Preferrably matching RioDBPlugin version.
 	public static final String VERSION = "0.0.4";
 
 	// a class with methods for using TCP as input
 	private final TcpInput input = new TcpInput();
-	
+
 	// a class with methods for using UDP as output
 	private final TcpOutput output = new TcpOutput();
-	
+
 	// a flag to determine which use "this" plugin is for
 	private boolean isInput = true;
 
 	@Override
 	public int getQueueSize() {
-		if(isInput) {
+		if (isInput) {
 			return input.getQueueSize();
 		}
 		return output.getQueueSize();
 	}
-	
+
 	@Override
 	public String getType() {
 		return PLUGIN_NAME;
@@ -74,7 +74,7 @@ public class TCP implements RioDBPlugin {
 
 	@Override
 	public void start() throws RioDBPluginException {
-		if(isInput) {
+		if (isInput) {
 			input.start();
 		} else {
 			output.start();
@@ -83,7 +83,7 @@ public class TCP implements RioDBPlugin {
 
 	@Override
 	public RioDBPluginStatus status() {
-		if(isInput) {
+		if (isInput) {
 			return input.status();
 		} else {
 			return output.status();
@@ -92,29 +92,21 @@ public class TCP implements RioDBPlugin {
 
 	@Override
 	public void stop() {
-		if(isInput) {
+		if (isInput) {
 			input.stop();
 		} else {
 			output.stop();
 		}
 	}
-	
+
 	@Override
 	public String version() {
 		return VERSION;
 	}
-	
 
-	
 	/*
- 	*   Methods for INPUT usage
- 	*/
-
-	@Override
-	public RioDBStreamMessage getNextInputMessage() throws RioDBPluginException {
-		return input.getNextInputMessage();
-	}
-
+	 * Methods for INPUT usage
+	 */
 
 	@Override
 	public void initInput(String inputParams, RioDBStreamMessageDef def) throws RioDBPluginException {
@@ -123,16 +115,22 @@ public class TCP implements RioDBPlugin {
 		// throw new RioDBPluginException("TCP plugin does not support input methods.");
 	}
 	
+	@Override
+	public RioDBStreamMessage getNextInputMessage() throws RioDBPluginException {
+		return input.getNextInputMessage();
+	}
+
 
 	/*
-	 *   Methods for OUTPUT usage
+	 * Methods for OUTPUT usage
 	 */
-	
+
 	@Override
 	public void initOutput(String outputParams, String[] columnHeaders) throws RioDBPluginException {
 		isInput = false;
 		output.init(outputParams, columnHeaders);
-		//throw new RioDBPluginException("TCP plugin does not support output methods.");
+		// throw new RioDBPluginException("TCP plugin does not support output
+		// methods.");
 	}
 
 	@Override

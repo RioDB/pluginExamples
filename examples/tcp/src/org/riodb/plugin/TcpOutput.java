@@ -38,21 +38,20 @@ import java.io.OutputStream;
 import java.io.PrintWriter;
 import java.net.Socket;
 import java.net.UnknownHostException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
-
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class TcpOutput {
 
-	// queue limits
-	public static final int QUEUE_INIT_CAPACITY = 244; // 10000;
-	public static final int MAX_CAPACITY = 1000000;
+	// default queue limits
+	public static final int DEFAULT_QUEUE_INIT_CAPACITY = 244; // 10000;
+	public static final int DEFAULT_MAX_CAPACITY = 1000000;
 
 	// logger
-	private Logger logger = LoggerFactory.getLogger("RIODB");
+	private Logger logger = LoggerFactory.getLogger("org.riodb.plugin." + TCP.PLUGIN_NAME);
+	private String logPrefix = "TcpOutput - ";
 
 	private int status = 0; // 0 idle; 1 started; 2 warning; 3 fatal
 
@@ -61,14 +60,13 @@ public class TcpOutput {
 	private String delimiter = ",";
 
 	// An Outgoing queue based on blockingQueue for efficient processing
-	private LinkedBlockingQueue<String[]> streamBlockingQueue;
-
-	// number of worker threads to send output in parallel
-	private int workers = 1;
-	private ExecutorService workerPool;
+	private LinkedBlockingQueue<String[]> outgoingBlockingQueue;
 
 	// boolean variable for interrupting thread while() loop.
-	private boolean interrupt;
+	private AtomicBoolean interrupt;
+
+	// a poison pill to interrupt blocked take()
+	private final String[] POISON = { "'", "!" };
 
 	// if an error occurs (like invalid number)
 	// we only log it once.
@@ -96,52 +94,16 @@ public class TcpOutput {
 		}
 	}
 
-	// Method that child thread calls to dequeue messages from the queue
-	private void dequeAndSend() {
-
-		logger.debug(TCP.PLUGIN_NAME + " Output Worker Thread [" + Thread.currentThread().getName() + "] - started.");
-
-		while (!interrupt) {
-
-			String columns[];
-
-			// a quick poll in case queue is not empty
-			columns = streamBlockingQueue.poll();
-
-			// if queue was empty
-			if (columns == null || columns.length == 0) {
-
-				/// then we take() and wait for something to be received.
-				try {
-					columns = streamBlockingQueue.take();
-				} catch (InterruptedException e) {
-					logger.debug(TCP.PLUGIN_NAME + " Output WorkerThread [" + Thread.currentThread().getName()
-							+ "] -interrupted.");
-					break;
-				}
-			}
-
-			if (columns != null && columns.length > 0) {
-				sendTCPmsg(columns);
-			}
-		}
-
-		logger.debug(TCP.PLUGIN_NAME + " Output Worker Thread [" + Thread.currentThread().getName() + "] -stopped.");
-
-		status = 0;
-
-	}
-
 	// get queue size
 	public int getQueueSize() {
 
-		return streamBlockingQueue.size();
+		return outgoingBlockingQueue.size();
 
 	}
 
 	public void init(String outputParams, String[] columnHeaders) throws RioDBPluginException {
 
-		logger.debug("initializing TCP plugin for OUTPUT with paramters ( " + outputParams + ") ");
+		logger.debug(logPrefix + "Initializing with paramters ( " + outputParams + ") ");
 
 		String params[] = outputParams.split(" ");
 
@@ -166,7 +128,7 @@ public class TcpOutput {
 
 		this.address = addressParam;
 
-		int maxCapacity = MAX_CAPACITY;
+		int maxCapacity = DEFAULT_MAX_CAPACITY;
 		// get optional queue capacity
 		String newMaxCapacity = getParameter(params, "queue_capacity");
 		if (newMaxCapacity != null) {
@@ -175,51 +137,43 @@ public class TcpOutput {
 			} else {
 				status = 3;
 				throw new RioDBPluginException(
-						TCP.PLUGIN_NAME + " output requires positive intenger for 'max_capacity' parameter.");
+						TCP.PLUGIN_NAME + " output requires positive intenger for 'queue_capacity' parameter.");
 			}
 
 		}
 
-		// if user opted for extreme mode...
-		String newWorkers = getParameter(params, "workers");
-		if (newWorkers != null) {
-			if (isNumber(newWorkers) && Integer.valueOf(newWorkers) > 0) {
-				workers = Integer.valueOf(newWorkers);
-			} else {
-				status = 3;
-				throw new RioDBPluginException(
-						TCP.PLUGIN_NAME + " output requires positive intenger for 'workers' parameter.");
-			}
-		}
+		outgoingBlockingQueue = new LinkedBlockingQueue<String[]>(maxCapacity);
 
-		streamBlockingQueue = new LinkedBlockingQueue<String[]>(maxCapacity);
+		interrupt = new AtomicBoolean(true);
+
+		logger.debug(logPrefix + "Initialized.");
 
 	}
 
 	// method for sending columns to output worker(s)
 	public void sendOutput(String[] columns) {
 
-		streamBlockingQueue.offer(columns);
+		outgoingBlockingQueue.offer(columns);
 
 	}
 
 	// procedure for sending UDP packet to socket.
 	private void sendTCPmsg(String columns[]) {
 
-		String msg = "";
+		StringBuilder msg = new StringBuilder("");
 
 		for (int i = 0; i < columns.length; i++) {
 			if (i > 0) {
-				msg = msg + delimiter;
+				msg.append(delimiter);
 			}
-			msg = msg + columns[i];
+			msg.append(columns[i]);
 		}
 
 		try (Socket socket = new Socket(address, portNumber)) {
 
 			OutputStream output = socket.getOutputStream();
 			PrintWriter writer = new PrintWriter(output, true);
-			writer.println(msg);
+			writer.println(msg.toString());
 			output.flush();
 			output.close();
 			socket.close();
@@ -229,7 +183,7 @@ public class TcpOutput {
 			if (!errorAlreadyCaught) {
 				errorAlreadyCaught = true;
 				logger.error(
-						"TCP Output Worker Thread [" + Thread.currentThread().getName() + "]  UnknownHostException");
+						logPrefix + "Worker Thread [" + Thread.currentThread().getName() + "]  UnknownHostException");
 				logger.debug(e.getMessage().replace("\n", " ").replace("\r", " ").replace("\"", " "));
 			}
 			status = 2;
@@ -238,7 +192,7 @@ public class TcpOutput {
 
 			if (!errorAlreadyCaught) {
 				errorAlreadyCaught = true;
-				logger.error("TCP Output Worker Thread [" + Thread.currentThread().getName() + "] - IOException");
+				logger.error(logPrefix + "Worker Thread [" + Thread.currentThread().getName() + "] IOException");
 				logger.debug(e.getMessage().replace("\n", " ").replace("\r", " ").replace("\"", " "));
 			}
 			status = 2;
@@ -250,17 +204,36 @@ public class TcpOutput {
 
 		errorAlreadyCaught = false;
 
-		logger.debug("TCP Output Worker starting...");
-		interrupt = false;
-		workerPool = Executors.newFixedThreadPool(workers);
-		Runnable task = () -> {
-			dequeAndSend();
-		};
-		for (int i = 0; i < workers; i++) {
-			workerPool.execute(task);
+		logger.debug(logPrefix + "Starting...");
+		interrupt.set(false);
+		status = 1;
+
+		while (!interrupt.get()) {
+
+			// a quick poll in case queue is not empty
+			String columns[] = outgoingBlockingQueue.poll();
+
+			// if queue was empty
+			if (columns == null || columns.length == 0) {
+
+				/// then we take() and wait for something to be received.
+				try {
+					columns = outgoingBlockingQueue.take();
+				} catch (InterruptedException e) {
+					logger.debug(logPrefix + "Blocking queue interrupted.");
+					break;
+				}
+			}
+
+			if (columns != null && columns.length > 0 && columns != POISON) {
+				sendTCPmsg(columns);
+			}
 		}
 
-		status = 1;
+		logger.debug(logPrefix + "Stopped.");
+
+		status = 0;
+
 	}
 
 	public RioDBPluginStatus status() {
@@ -268,14 +241,10 @@ public class TcpOutput {
 	}
 
 	public void stop() {
-		logger.debug("TCP Output Worker stopping...");
-		interrupt = true;
-		try {
-			Thread.sleep(10);
-		} catch (InterruptedException e) {
-		}
-		workerPool.shutdown();
-		status = 0;
+		logger.debug(logPrefix + "Stopping...");
+		interrupt.set(true);
+		outgoingBlockingQueue.offer(POISON);
+
 	}
 
 }

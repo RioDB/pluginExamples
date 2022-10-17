@@ -48,22 +48,25 @@ import java.net.SocketException;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import org.jctools.queues.SpscChunkedArrayQueue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class UdpInput implements Runnable {
+public class UdpInput {
 
-	// queue limits
-	public static final int QUEUE_INIT_CAPACITY = 244; // 10000;
-	public static final int MAX_CAPACITY = 1000000;
+	// default queue limits
+	public static final int DEFAULT_QUEUE_INIT_CAPACITY = 244; // 10000;
+	public static final int DEFAULT_MAX_CAPACITY = 1000000;
 
 	// the max size of text msg
 	private final int DEFAULT_BUFFER_SIZE = 1024;
 	private int bufferSize = DEFAULT_BUFFER_SIZE;
 
 	// logger
-	private Logger logger = LoggerFactory.getLogger("RIODB");
+	private Logger logger = LoggerFactory.getLogger("org.riodb.plugin." + UDP.PLUGIN_NAME);
+	private String logPrefix = UDP.PLUGIN_NAME + " UdpInput - ";
 
 	// listener port number
 	private int portNumber;
@@ -99,11 +102,8 @@ public class UdpInput implements Runnable {
 	// instance of DatagramSocket
 	private DatagramSocket socket;
 
-	// Thread for running listener
-	private Thread socketListenerThread;
-
 	// boolean variable for interrupting thread while() loop.
-	private boolean interrupt;
+	private AtomicBoolean interrupt = new AtomicBoolean(true);
 
 	// if an error occurs (like invalid number)
 	// we only log it once.
@@ -114,7 +114,7 @@ public class UdpInput implements Runnable {
 
 		// poll next packet from queue
 		DatagramPacket packet;
-		
+
 		// again, extremeMode works with arrayDeque,
 		// and efficient mode works with blockingQueue
 		if (extremeMode) {
@@ -133,109 +133,106 @@ public class UdpInput implements Runnable {
 			// a quick poll before take, in case it's not empty.
 			packet = streamBlockingQueue.poll();
 			// if it was empty...
-			if(packet == null) {
+			if (packet == null) {
 				try {
 					// now we do a take and wait until something comes.
 					packet = streamBlockingQueue.take();
 				} catch (InterruptedException e) {
-					logger.debug(UDP.PLUGIN_NAME + " INPUT queue interrupted.");
+					logger.debug(logPrefix + "Queue interrupted.");
 					return null;
 				}
 			}
 		}
 
-		// if there is a non-null packet....
-//		if (packet != null) {
+		// make a String object from packet
+		String s = new String(packet.getData());
 
-			// make a String object from packet
-			String s = new String(packet.getData());
-			
-			if (s != null && s.length() > 0) {
+		if (s != null && s.length() > 0) {
 
-				s = s.trim(); // trim will cause problem if delimiter is spaces.
+			s = s.trim(); // trim will cause problem if delimiter is spaces.
 
-				// create new event.
-				RioDBStreamMessage event = new RioDBStreamMessage(numberFieldCount, stringFieldCount);
+			// create new event.
+			RioDBStreamMessage event = new RioDBStreamMessage(numberFieldCount, stringFieldCount);
 
-				// split message fields by delimiter
-				String fields[] = s.split(fieldDelimiter);
+			// split message fields by delimiter
+			String fields[] = s.split(fieldDelimiter);
 
-				if (fields.length >= totalFieldCount) {
+			if (fields.length >= totalFieldCount) {
 
-					try {
+				try {
 
-						// iterate through message fields
-						for (int i = 0; i < totalFieldCount; i++) {
+					// iterate through message fields
+					for (int i = 0; i < totalFieldCount; i++) {
 
-							// if this field is the timestamp field
-							if (i == timestampFieldId) {
-								// if there is a format defined, then timestamp parse timestamp String into unix
-								// epoch number.
-								if (timestampFormat != null) {
-									try {
-										ZonedDateTime zdt = ZonedDateTime.parse(fields[i], timestampFormat);
-										double epoch = zdt.toInstant().toEpochMilli() / 1000;
-										event.set(fieldMap[i], epoch);
-									} catch (java.time.format.DateTimeParseException e) {
-										status = 2;
-										if (!errorAlreadyCaught) {
-											logger.warn(UDP.PLUGIN_NAME + " INPUT field '" + fields[i]
-													+ "' could not be parsed as '" + timestampFormat.toString() + "'");
-											errorAlreadyCaught = true;
-										}
-										return null;
+						// if this field is the timestamp field
+						if (i == timestampFieldId) {
+							// if there is a format defined, then timestamp parse timestamp String into unix
+							// epoch number.
+							if (timestampFormat != null) {
+								try {
+									ZonedDateTime zdt = ZonedDateTime.parse(fields[i], timestampFormat);
+									double epoch = zdt.toInstant().toEpochMilli() / 1000;
+									event.set(fieldMap[i], epoch);
+								} catch (java.time.format.DateTimeParseException e) {
+									status = 2;
+									if (!errorAlreadyCaught) {
+										logger.warn(UDP.PLUGIN_NAME + "Field '" + fields[i]
+												+ "' could not be parsed as '" + timestampFormat.toString() + "'");
+										errorAlreadyCaught = true;
 									}
-
-								} else if (timestampMillis) {
-									// can raise NumberFormatexception
-									double d = (long) (Double.valueOf(fields[i]) / 1000);
-									event.set(fieldMap[i], d);
-								} else {
-									// can raise NumberFormatexception
-									event.set(fieldMap[i], Double.valueOf(fields[i]));
+									return null;
 								}
-							} else if (numericFlags[i]) {
+
+							} else if (timestampMillis) {
+								// can raise NumberFormatexception
+								double d = (long) (Double.valueOf(fields[i]) / 1000);
+								event.set(fieldMap[i], d);
+							} else {
 								// can raise NumberFormatexception
 								event.set(fieldMap[i], Double.valueOf(fields[i]));
-							} else {
-								event.set(fieldMap[i], fields[i]);
 							}
+						} else if (numericFlags[i]) {
+							// can raise NumberFormatexception
+							event.set(fieldMap[i], Double.valueOf(fields[i]));
+						} else {
+							event.set(fieldMap[i], fields[i]);
 						}
-						return event;
-
-					} catch (NumberFormatException nfe) {
-						status = 2;
-						if (!errorAlreadyCaught) {
-							logger.warn(UDP.PLUGIN_NAME + " INPUT received INVALID NUMBER [" + s + "]");
-							errorAlreadyCaught = true;
-						}
-						return null;
 					}
+					return event;
 
-				} else {
+				} catch (NumberFormatException nfe) {
 					status = 2;
 					if (!errorAlreadyCaught) {
-						logger.warn(UDP.PLUGIN_NAME + " INPUT received fewer values than expected. [" + s + "]");
+						logger.warn(UDP.PLUGIN_NAME + "Received INVALID NUMBER [" + s + "]");
 						errorAlreadyCaught = true;
 					}
+					return null;
+				}
+
+			} else {
+				status = 2;
+				if (!errorAlreadyCaught) {
+					logger.warn(UDP.PLUGIN_NAME + "Received fewer values than expected. [" + s + "]");
+					errorAlreadyCaught = true;
 				}
 			}
-//		}
+		}
+
 		return null;
 	}
 
 	// get queue size
 	public int getQueueSize() {
-		if(extremeMode) {
+		if (extremeMode) {
 			return streamBlockingQueue.size();
 		}
-		return streamArrayQueue.size(); 
+		return streamArrayQueue.size();
 	}
 
 	// initialize plugin for use as INPUT stream.
 	public void initInput(String listenerParams, RioDBStreamMessageDef def) throws RioDBPluginException {
 
-		logger.debug(UDP.PLUGIN_NAME + " initializing for INPUT with paramters (" + listenerParams + ")");
+		logger.debug(logPrefix + "Initializing with paramters (" + listenerParams + ")");
 
 		// count of numeric fields in message
 		numberFieldCount = def.getNumericFieldCount();
@@ -261,13 +258,13 @@ public class UdpInput implements Runnable {
 		// record the timestamp field id
 		if (def.getTimestampNumericFieldId() >= 0) {
 			this.timestampFieldId = def.getTimestampNumericFieldId();
-			logger.trace(UDP.PLUGIN_NAME + " timestampNumericFieldId is " + timestampFieldId);
+			logger.debug( logPrefix + "TimestampNumericFieldId is " + timestampFieldId);
 		}
 
 		// record the timestamp format
 		if (def.getTimestampFormat() != null) {
 			this.timestampFormat = DateTimeFormatter.ofPattern(def.getTimestampFormat());
-			logger.trace(UDP.PLUGIN_NAME + " timestampFormat is " + timestampFormat);
+			logger.debug( logPrefix + "TimestampFormat is " + timestampFormat);
 		}
 
 		// record timestamp precision
@@ -278,7 +275,7 @@ public class UdpInput implements Runnable {
 		// process parameters passed in the output parenthesis
 		String params[] = listenerParams.split(" ");
 		if (params.length < 2)
-			throw new RioDBPluginException(UDP.PLUGIN_NAME + " input requires numeric 'port' parameter.");
+			throw new RioDBPluginException(UDP.PLUGIN_NAME + "Requires numeric 'port' parameter.");
 
 		// get port parameter
 		boolean portNumberSet = false;
@@ -289,11 +286,11 @@ public class UdpInput implements Runnable {
 				portNumberSet = true;
 			} else {
 				status = 3;
-				throw new RioDBPluginException(UDP.PLUGIN_NAME + " input requires numeric 'port' parameter.");
+				throw new RioDBPluginException(UDP.PLUGIN_NAME + "Requires numeric 'port' parameter.");
 			}
 		}
 		if (!portNumberSet)
-			throw new RioDBPluginException(UDP.PLUGIN_NAME + " input requires numeric 'port' parameter.");
+			throw new RioDBPluginException(UDP.PLUGIN_NAME + "Requires numeric 'port' parameter.");
 
 		// get optional buffer_size
 		String newBufferSize = getParameter(params, "buffer_size");
@@ -302,7 +299,7 @@ public class UdpInput implements Runnable {
 				bufferSize = Integer.valueOf(newBufferSize);
 			} else {
 				status = 3;
-				throw new RioDBPluginException(UDP.PLUGIN_NAME + " input requires numeric 'buffer_size' parameter.");
+				throw new RioDBPluginException(UDP.PLUGIN_NAME + "Requires numeric 'buffer_size' parameter.");
 			}
 
 		}
@@ -317,12 +314,12 @@ public class UdpInput implements Runnable {
 			} else {
 				status = 3;
 				throw new RioDBPluginException(
-						UDP.PLUGIN_NAME + " input delimiter should be specified in quotes, like ',' ");
+						UDP.PLUGIN_NAME + "Delimiter should be specified in quotes, like ',' ");
 			}
 		}
 
 		// default queue size capacity
-		int maxCapacity = MAX_CAPACITY;
+		int maxCapacity = DEFAULT_MAX_CAPACITY;
 		// get optional queue capacity
 		String newMaxCapacity = getParameter(params, "queue_capacity");
 		if (newMaxCapacity != null) {
@@ -331,7 +328,7 @@ public class UdpInput implements Runnable {
 			} else {
 				status = 3;
 				throw new RioDBPluginException(
-						UDP.PLUGIN_NAME + " input requires positive intenger for 'max_capacity' parameter.");
+						UDP.PLUGIN_NAME + "Requires positive intenger for 'queue_capacity' parameter.");
 			}
 
 		}
@@ -341,62 +338,63 @@ public class UdpInput implements Runnable {
 		String mode = getParameter(params, "mode");
 		if (mode != null && mode.equals("extreme")) {
 			extremeMode = true;
-			streamArrayQueue = new SpscChunkedArrayQueue<DatagramPacket>(QUEUE_INIT_CAPACITY, maxCapacity);
+			streamArrayQueue = new SpscChunkedArrayQueue<DatagramPacket>(DEFAULT_QUEUE_INIT_CAPACITY, maxCapacity);
 		} else {
 			streamBlockingQueue = new LinkedBlockingQueue<DatagramPacket>(maxCapacity);
 		}
 
+		socket = null;
+
 		status = 0;
-		
-		logger.debug(UDP.PLUGIN_NAME + " input initialized.");
+
+		logger.debug(logPrefix + "Initialized.");
 
 	}
 
-	// thread RUN method. Receives data from socket and inserts it into queue
-	public void run() {
-		logger.debug(UDP.PLUGIN_NAME + " input starting on port " + portNumber);
+	// start plugin process
+	public void start() throws RioDBPluginException {
+		interrupt.set(false);
 		try {
-			while (!interrupt) {// (!Thread.currentThread().isInterrupted()) {
+			socket = new DatagramSocket(portNumber);
+
+			logger.debug(logPrefix + "Starting on port " + portNumber);
+//			try {
+			status = 1;
+
+			// loop through obtaining datagram packets
+			while (!interrupt.get()) {
 				byte[] buf = new byte[bufferSize];
 				DatagramPacket packet = new DatagramPacket(buf, bufferSize);
-				socket.receive(packet);
-				if(extremeMode) {
+				try {
+					socket.receive(packet);
+				} catch (IOException e) {
+					if (!errorAlreadyCaught) {
+						logger.error(UDP.PLUGIN_NAME + "IOException: " + e.getMessage().replace("\n", "  "));
+						errorAlreadyCaught = true;
+					}
+				}
+				if (extremeMode) {
 					streamArrayQueue.offer(packet);
 				} else {
 					streamBlockingQueue.offer(packet);
 				}
-				
-			}
-		} catch (IOException e) {
-			if (interrupt) {
-				logger.debug(UDP.PLUGIN_NAME + " input port " + portNumber + " closed for stream.");
-			} else {
-				logger.error(UDP.PLUGIN_NAME + " input port " + portNumber + " closed unexpectedly!");
-				logger.debug(e.getMessage().replace('\n', ';').replace('\r', ';'));
-			}
-		} finally {
-			if (socket != null)
-				socket.close();
-		}
-		status = 0;
-	}
 
-	public void start() throws RioDBPluginException {
+			}
+			logger.debug(logPrefix + "Port " + portNumber + " closed for stream.");
+			logger.debug(logPrefix + "Closing socket.");
+			
+			socket.close();
+			socket = null;
+			status = 0;
 
-		interrupt = false;
-		try {
-			socket = new DatagramSocket(portNumber);
-			socketListenerThread = new Thread(this);
-			socketListenerThread.setName("INPUT_UDP_THREAD");
-			socketListenerThread.start();
 		} catch (SocketException e) {
 			status = 3;
 			RioDBPluginException p = new RioDBPluginException("Failed to start Listener. " + e.getMessage());
 			p.setStackTrace(e.getStackTrace());
 			throw p;
 		}
-		status = 1;
-		logger.debug("UDP Input " + portNumber + " started.");
+
+		logger.debug(logPrefix + "" + portNumber + " started.");
 	}
 
 	public RioDBPluginStatus status() {
@@ -405,25 +403,16 @@ public class UdpInput implements Runnable {
 
 	public void stop() {
 
-		logger.debug("UDP Input closing socket " + portNumber);
+		logger.debug(logPrefix + "Stopping on port " + portNumber);
 
-		try {
-			if (!socket.isClosed()) {
-				socket.close();
-			}
-			Thread.sleep(10);
-		} catch (InterruptedException e) {
-			;
+		// setting this to true will break the start() loop
+		if(!interrupt.get()) {
+			interrupt.set(true);
+			socket.close();
 		}
-		logger.debug("UDP Input interrupting Thread.");
-		// socket.close();
-		// socketListenerThread.interrupt();
-		try {
-			Thread.sleep(10);
-		} catch (InterruptedException e) {
-			;
-		}
+
 		status = 0;
+		logger.debug(logPrefix + "Terminated.");
 	}
 
 	private String getParameter(String params[], String key) {

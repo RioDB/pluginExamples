@@ -47,16 +47,20 @@ import java.net.Socket;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import org.jctools.queues.SpscChunkedArrayQueue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class TcpInput implements Runnable{
-	public static final int QUEUE_INIT_CAPACITY = 244; // 10000;
-	public static final int MAX_CAPACITY = 1000000;
+public class TcpInput {
+	// default queue limits
+	public static final int DEFAULT_QUEUE_INIT_CAPACITY = 244; // 10000;
+	public static final int DEFAULT_MAX_CAPACITY = 1000000;
 	public static final int DEFAULT_CONN_BACKLOG = 1000;
 
-	private Logger logger = LoggerFactory.getLogger("RIODB");
+	private Logger logger = LoggerFactory.getLogger(TCP.PLUGIN_NAME);
+	private String logPrefix = "org.riodb.plugin."+ TCP.PLUGIN_NAME + ".TcpInput - ";
 
 	private int portNumber;
 	private int status = 0; // 0 idle; 1 started; 2 warning; 3 fatal
@@ -85,9 +89,8 @@ public class TcpInput implements Runnable{
 	private ServerSocket serverSocket;
 	private Socket clientSocket;
 
-	private Thread socketListenerThread;
-
-	private boolean interrupt;
+	// process flags.
+	private AtomicBoolean interrupt;
 	private boolean errorAlreadyCaught = false;
 
 	private static final boolean isNumber(String s) {
@@ -99,6 +102,7 @@ public class TcpInput implements Runnable{
 		} catch (NumberFormatException nfe) {
 			return false;
 		}
+
 	}
 
 	public RioDBStreamMessage getNextInputMessage() throws RioDBPluginException {
@@ -122,7 +126,7 @@ public class TcpInput implements Runnable{
 				try {
 					message = streamBlockingQueue.take();
 				} catch (InterruptedException e) {
-					logger.debug(TCP.PLUGIN_NAME + " INPUT queue interrupted.");
+					logger.debug(logPrefix +"Queue interrupted.");
 					return null;
 				}
 			}
@@ -156,7 +160,7 @@ public class TcpInput implements Runnable{
 								} catch (java.time.format.DateTimeParseException e) {
 									status = 2;
 									if (!errorAlreadyCaught) {
-										logger.warn(TCP.PLUGIN_NAME + " INPUT field '"+ fields[i] +"' could not be parsed as '"+ timestampFormat.toString() +"'");
+										logger.warn(logPrefix + fields[i] +"' could not be parsed as '"+ timestampFormat.toString() +"'");
 										errorAlreadyCaught = true;
 									}
 									return null;
@@ -183,7 +187,7 @@ public class TcpInput implements Runnable{
 				} catch (NumberFormatException nfe) {
 					status = 2;
 					if (!errorAlreadyCaught) {
-						logger.warn(TCP.PLUGIN_NAME + " INPUT received INVALID NUMBER [" + message + "]");
+						logger.warn(logPrefix +"Received INVALID NUMBER [" + message + "]");
 						errorAlreadyCaught = true;
 					}
 					return null;
@@ -192,7 +196,7 @@ public class TcpInput implements Runnable{
 			} else {
 				status = 2;
 				if (!errorAlreadyCaught) {
-					logger.warn(TCP.PLUGIN_NAME + " INPUT received fewer values than expected. [" + message + "]");
+					logger.warn(logPrefix +"Received fewer values than expected. [" + message + "]");
 					errorAlreadyCaught = true;
 				}
 			}
@@ -212,7 +216,7 @@ public class TcpInput implements Runnable{
 
 	public void init(String datasourceParams, RioDBStreamMessageDef def) throws RioDBPluginException {
 
-		logger.debug(TCP.PLUGIN_NAME + " is initializing for INPUT with paramters (" + datasourceParams + ")");
+		logger.debug(logPrefix +"Initializing for INPUT with paramters (" + datasourceParams + ")");
 
 		numberFieldCount = def.getNumericFieldCount();
 		stringFieldCount = def.getStringFieldCount();
@@ -232,12 +236,12 @@ public class TcpInput implements Runnable{
 		
 		if (def.getTimestampNumericFieldId() >= 0) {
 			this.timestampFieldId = def.getTimestampNumericFieldId();
-			logger.trace(TCP.PLUGIN_NAME + " timestampNumericFieldId is " + timestampFieldId);
+			logger.trace(logPrefix +"TimestampNumericFieldId is " + timestampFieldId);
 		}
 		
 		if(def.getTimestampFormat() != null) {
 			this.timestampFormat = DateTimeFormatter.ofPattern(def.getTimestampFormat());
-			logger.trace(TCP.PLUGIN_NAME + " timestampFormat is " + timestampFormat);
+			logger.trace(logPrefix +"TimestampFormat is " + timestampFormat);
 		}
 
 		if (def.getTimestampMillis()) {
@@ -246,7 +250,7 @@ public class TcpInput implements Runnable{
 
 		String params[] = datasourceParams.split(" ");
 		if (params.length < 2)
-			throw new RioDBPluginException(TCP.PLUGIN_NAME+ " input requires a numeric 'port' parameter.");
+			throw new RioDBPluginException(logPrefix +"Requires a numeric 'port' parameter.");
 
 		// get port parameter
 		boolean portNumberSet = false;
@@ -257,11 +261,11 @@ public class TcpInput implements Runnable{
 				portNumberSet = true;
 			} else {
 				status = 3;
-				throw new RioDBPluginException(TCP.PLUGIN_NAME+ " input requires a numeric 'port' parameter.");
+				throw new RioDBPluginException(logPrefix +"Requires a numeric 'port' parameter.");
 			}
 		}
 		if (!portNumberSet) {
-			throw new RioDBPluginException(TCP.PLUGIN_NAME+ " input requires a numeric 'port' parameter.");
+			throw new RioDBPluginException(logPrefix +"Requires a numeric 'port' parameter.");
 		}
 		
 		// get delimiter parameter
@@ -271,11 +275,11 @@ public class TcpInput implements Runnable{
 				fieldDelimiter = String.valueOf(delimiter.charAt(1));
 			} else {
 				status = 3;
-				throw new RioDBPluginException(TCP.PLUGIN_NAME+ " input delimiter should be declared in single quotes, like ','");
+				throw new RioDBPluginException(logPrefix +"a delimiter should be declared in single quotes, like ','");
 			}
 		}
 		
-		int maxCapacity = MAX_CAPACITY;
+		int maxCapacity = DEFAULT_MAX_CAPACITY;
 		// get optional queue capacity
 		String newMaxCapacity = getParameter(params, "queue_capacity");
 		if (newMaxCapacity != null) {
@@ -284,7 +288,7 @@ public class TcpInput implements Runnable{
 			} else {
 				status = 3;
 				throw new RioDBPluginException(
-						TCP.PLUGIN_NAME + " input requires positive intenger for 'max_capacity' parameter.");
+						logPrefix +"Requires positive intenger for 'queue_capacity' parameter.");
 			}
 
 		}
@@ -292,29 +296,30 @@ public class TcpInput implements Runnable{
 		String mode = getParameter(params, "mode");
 		if (mode != null && mode.equals("extreme")) {
 			extremeMode = true;
-			streamArrayQueue = new SpscChunkedArrayQueue<String>(QUEUE_INIT_CAPACITY, maxCapacity);
+			streamArrayQueue = new SpscChunkedArrayQueue<String>(DEFAULT_QUEUE_INIT_CAPACITY, maxCapacity);
 		} else {
 			streamBlockingQueue = new LinkedBlockingQueue<String>(maxCapacity);
 		}
 
 		status = 0;
+		interrupt = new AtomicBoolean(true);
 		
-		logger.debug(TCP.PLUGIN_NAME + " input initialized.");
+		logger.debug(logPrefix +"Initialized.");
 
 	}
 
-	public void run() {
-		logger.info(TCP.PLUGIN_NAME + " input starting on port " + portNumber);
-
+	// start receiving data. 
+	public void start() throws RioDBPluginException {
+		interrupt.set(false);
+		status = 1;
+		logger.debug(logPrefix +"Listener process started.");
+		
 		try {
 
 			serverSocket = new ServerSocket(portNumber, DEFAULT_CONN_BACKLOG);
-			// serverSocket.setSoTimeout(1000);
-
-			// while (!interrupt) {
 
 			// loop for accepting incoming connections.
-			while ((clientSocket = serverSocket.accept()) != null && !interrupt) {
+			while ((clientSocket = serverSocket.accept()) != null && !interrupt.get()) {
 				clientSocket.setSoTimeout(1000);
 				try {
 
@@ -346,7 +351,7 @@ public class TcpInput implements Runnable{
 					clientSocket.close();
 				} catch (IOException e) {
 					if(!errorAlreadyCaught) {
-						logger.warn(TCP.PLUGIN_NAME + " input IOException. Connection reset.");
+						logger.warn(logPrefix +"IOException. Connection reset.");
 						status = 2;
 					}
 				}
@@ -354,31 +359,22 @@ public class TcpInput implements Runnable{
 			// }
 			status = 0;
 			if (!serverSocket.isClosed()) {
-				logger.debug(TCP.PLUGIN_NAME + " input closing socket server.");
+				logger.debug(logPrefix +"Closing socket server.");
 				serverSocket.close();
 			}
 
 		} catch (IOException e) {
-			if (interrupt) {
-				logger.info(TCP.PLUGIN_NAME + " input listener process interrupted.");
+			if (interrupt.get()) {
+				logger.info(logPrefix +"Listener process interrupted.");
 				status = 0;
 			} else {
 				status = 3;
-				logger.info(TCP.PLUGIN_NAME + " input listener process interrupted UNEXPECTEDLY.");
+				logger.info(logPrefix +"Listener process interrupted UNEXPECTEDLY.");
 				logger.debug(e.getMessage().replace('\n', ';').replace('\r', ';'));
 			}
 		}
 
-		logger.debug(TCP.PLUGIN_NAME + " input listener process stopped.");
-	}
-
-	public void start() throws RioDBPluginException {
-		interrupt = false;
-		socketListenerThread = new Thread(this);
-		socketListenerThread.setName("INPUT_TCP_THREAD");
-		socketListenerThread.start();
-		status = 1;
-		logger.debug(TCP.PLUGIN_NAME + " input listener process started.");
+		logger.debug(logPrefix +"Listener process terminated.");
 	}
 
 	public RioDBPluginStatus status() {
@@ -387,17 +383,16 @@ public class TcpInput implements Runnable{
 
 	public void stop() {
 		logger.debug("Closing TCP socket.");
-		interrupt = true;
+		interrupt.set(true);;
 		try {
 			if (!serverSocket.isClosed()) {
-				logger.debug("Closing TCP server socket");
+				logger.debug(logPrefix +"Closing TCP server socket");
 				serverSocket.close();
 			}
 		} catch (IOException e) {
-			logger.error("Error closing TCP sockets: " + e.getMessage().replace("\n", " ").replace("\r", " "));
+			logger.error(logPrefix +"Closing TCP sockets: " + e.getMessage().replace("\n", " ").replace("\r", " "));
 		}
-		logger.debug("Interrupting TCP thread.");
-		socketListenerThread.interrupt();
+		logger.debug(logPrefix +"Interrupting TCP thread.");
 		status = 0;
 	}
 
