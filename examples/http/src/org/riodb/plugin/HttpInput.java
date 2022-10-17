@@ -541,8 +541,10 @@ public class HttpInput {
 				return message;
 
 			} else {
-				System.out.println(HTTP.PLUGIN_NAME + " INPUT - Received INVALID JSON payload.");
-
+				if (!errorAlreadyCaught) {
+					logger.warn(HTTP.PLUGIN_NAME + " INPUT - Received an invalid json payload.");
+					errorAlreadyCaught = true;
+				}
 			}
 		}
 
