@@ -1,6 +1,6 @@
 [riodb.co](https://www.riodb.co)  
 
-RioDB (www.riodb.org) is a downloadable software for data stream processing.  
+RioDB is a downloadable software for data stream processing.  
 You can build powerful data screening bots through simple SQL-like statements.  
 
 ## In a nuthshell:
